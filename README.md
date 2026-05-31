@@ -1,8 +1,39 @@
 # RepoPrompt CE
 
-RepoPrompt CE is the community edition of RepoPrompt. It is a Swift Package
-Manager macOS app with a packaged debug `.app`, a bundled MCP CLI, and
-repository-local developer tooling.
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![Platform: macOS 26](https://img.shields.io/badge/platform-macOS%2026-black)
+
+**The open-source macOS Context IDE for AI coding agents.**
+
+RepoPrompt CE helps you assemble, inspect, and hand off rich codebase context:
+pick the right files, summarize project structure and Git history, and package
+it all into a dense, reviewable prompt for ChatGPT, Claude, Codex, Cursor, and
+other AI coding tools. You can also hand that context straight to agents through
+the bundled MCP server and CLI.
+
+## What You Can Do
+
+- Curate focused, reviewable context for an AI model from one or more
+  repositories.
+- Combine selected files, project-structure maps, function/type CodeMaps, and
+  Git diffs in a single prompt.
+- Run Context Builder to discover relevant code and produce an optimized prompt.
+- Plan, review, and ask follow-up questions in built-in chat, including an
+  Oracle flow for second opinions.
+- Run longer agent sessions in Agent Mode with supported CLI-backed providers.
+- Connect external MCP clients to search, inspect, and select repository context
+  from your own tools.
+
+## Project Status
+
+RepoPrompt CE is the open-source community edition of RepoPrompt, originally a
+paid macOS app. It removes paid activation flows and license keys while keeping
+the core prompt, copy, chat, CodeMap, Agent Mode, and custom-provider features
+available without paid license gates. The project is licensed under
+[Apache-2.0](LICENSE).
+
+Maintainers track release signing, Sparkle metadata, dependency pins, and
+third-party notices in [`docs/open-source-readiness.md`](docs/open-source-readiness.md).
 
 ## Requirements
 

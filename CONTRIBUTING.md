@@ -29,6 +29,10 @@ membership are managed separately.
 Keep changes focused and explain what they do. AI-assisted work is welcome, but
 you should understand the code you submit and be able to explain its behavior.
 
+Do not check raw generated RP outputs into the repo; prompts, reviews,
+investigations, analysis, designs, and reference dumps are working artifacts
+unless deliberately distilled into durable docs.
+
 Run the smallest relevant coordinated validation commands from [`AGENTS.md`](AGENTS.md).
 At minimum:
 
