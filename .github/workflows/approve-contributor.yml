@@ -1,0 +1,205 @@
+name: Approve Contributor
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  approve:
+    if: ${{ !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Update contributor approval
+        id: update
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const APPROVED_FILE = '.github/APPROVED_CONTRIBUTORS';
+            const VALID_CAPABILITIES = new Set(['issue', 'pr']);
+            const USERNAME_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+            const issueAuthor = context.payload.issue.user.login;
+            const commenter = context.payload.comment.user.login;
+            const commentBody = (context.payload.comment.body || '').trim().toLowerCase();
+            const defaultBranch = context.payload.repository.default_branch;
+
+            let targetCapability;
+            if (commentBody === 'lgtmi') {
+              targetCapability = 'issue';
+            } else if (commentBody === 'lgtm') {
+              targetCapability = 'pr';
+            } else {
+              console.log('Comment is not an exact lgtm or lgtmi approval');
+              core.setOutput('status', 'skipped');
+              return;
+            }
+
+            if (issueAuthor.endsWith('[bot]') || issueAuthor === 'dependabot[bot]') {
+              console.log(`Skipping bot issue author: ${issueAuthor}`);
+              core.setOutput('status', 'skipped');
+              return;
+            }
+
+            try {
+              const { data: permissionLevel } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: commenter,
+              });
+
+              if (!['admin', 'maintain'].includes(permissionLevel.permission)) {
+                console.log(`${commenter} does not have maintainer access`);
+                core.setOutput('status', 'skipped');
+                return;
+              }
+            } catch {
+              console.log(`${commenter} does not have collaborator access`);
+              core.setOutput('status', 'skipped');
+              return;
+            }
+
+            function parseApprovedUsers(content) {
+              const comments = [];
+              const users = new Map();
+              let previousKey = null;
+
+              for (const rawLine of content.split('\n')) {
+                const line = rawLine.trim();
+                if (!line) continue;
+                if (line.startsWith('#')) {
+                  comments.push(rawLine);
+                  continue;
+                }
+
+                const parts = line.split(/\s+/);
+                if (parts.length !== 2) {
+                  throw new Error(`Malformed contributor entry: ${rawLine}`);
+                }
+
+                const [username, capability] = parts;
+                const normalizedCapability = capability.toLowerCase();
+                const normalizedUsername = username.toLowerCase();
+                if (!USERNAME_PATTERN.test(username)) {
+                  throw new Error(`Invalid GitHub username: ${username}`);
+                }
+                if (!VALID_CAPABILITIES.has(normalizedCapability)) {
+                  throw new Error(`Invalid contributor capability: ${rawLine}`);
+                }
+                if (users.has(normalizedUsername)) {
+                  throw new Error(`Duplicate contributor: ${username}`);
+                }
+                if (previousKey && normalizedUsername < previousKey) {
+                  throw new Error(`Contributor list is not sorted: ${username}`);
+                }
+
+                users.set(normalizedUsername, {
+                  username,
+                  capability: normalizedCapability,
+                });
+                previousKey = normalizedUsername;
+              }
+
+              return { comments, users };
+            }
+
+            function stringifyApprovedUsers(comments, users) {
+              const entries = [...users.values()]
+                .sort((left, right) => {
+                  const leftKey = left.username.toLowerCase();
+                  const rightKey = right.username.toLowerCase();
+                  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+                })
+                .map(({ username, capability }) => `${username} ${capability}`);
+
+              return `${comments.join('\n')}\n\n${entries.join('\n')}\n`;
+            }
+
+            async function getApprovedFile() {
+              const { data: fileContent } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: APPROVED_FILE,
+                ref: defaultBranch,
+              });
+
+              if (!('content' in fileContent) || typeof fileContent.content !== 'string' || !('sha' in fileContent)) {
+                throw new Error(`Expected file content for ${APPROVED_FILE}`);
+              }
+
+              return {
+                sha: fileContent.sha,
+                content: Buffer.from(fileContent.content, 'base64').toString('utf8'),
+              };
+            }
+
+            for (let attempt = 1; attempt <= 5; attempt += 1) {
+              const { sha, content } = await getApprovedFile();
+              const { comments, users } = parseApprovedUsers(content);
+              const normalizedAuthor = issueAuthor.toLowerCase();
+              const existingEntry = users.get(normalizedAuthor);
+              const existingCapability = existingEntry?.capability ?? null;
+
+              if (existingCapability === 'pr' || existingCapability === targetCapability) {
+                core.setOutput('status', 'already');
+                core.setOutput('capability', existingCapability);
+                console.log(`${issueAuthor} is already approved for ${existingCapability}`);
+                return;
+              }
+
+              users.set(normalizedAuthor, {
+                username: existingEntry?.username ?? issueAuthor,
+                capability: targetCapability,
+              });
+
+              try {
+                await github.rest.repos.createOrUpdateFileContents({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: APPROVED_FILE,
+                  branch: defaultBranch,
+                  message: `chore: approve contributor ${issueAuthor}`,
+                  content: Buffer.from(stringifyApprovedUsers(comments, users)).toString('base64'),
+                  sha,
+                });
+
+                core.setOutput('status', existingCapability ? 'updated' : 'added');
+                core.setOutput('capability', targetCapability);
+                console.log(`Set ${issueAuthor} capability to ${targetCapability}`);
+                return;
+              } catch (error) {
+                if ((error.status === 409 || error.status === 422) && attempt < 5) {
+                  console.log(`Approval update raced with another commit; retrying (${attempt}/5)`);
+                  continue;
+                }
+
+                throw error;
+              }
+            }
+
+            throw new Error('Failed to update contributor approval after five attempts');
+
+      - name: Comment on issue
+        if: steps.update.outputs.status == 'added' || steps.update.outputs.status == 'updated' || steps.update.outputs.status == 'already'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const issueAuthor = context.payload.issue.user.login;
+            const capability = '${{ steps.update.outputs.capability }}';
+            let body;
+
+            if ('${{ steps.update.outputs.status }}' === 'already') {
+              body = `@${issueAuthor} is already approved.`;
+            } else if (capability === 'issue') {
+              body = `@${issueAuthor} is approved for future issues. Pull requests still require \`lgtm\`.`;
+            } else {
+              body = `@${issueAuthor} is approved for future issues and pull requests.`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

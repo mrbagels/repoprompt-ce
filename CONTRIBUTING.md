@@ -8,14 +8,19 @@ work manageable and gives maintainers room to review changes carefully.
 New issues and pull requests from accounts that are not approved are closed
 automatically. Maintainers may reopen worthwhile issues after review.
 
-The gate uses a private repository secret maintained by the project
-maintainers. Each entry has one capability:
+The gate reads the tracked [`.github/APPROVED_CONTRIBUTORS`](.github/APPROVED_CONTRIBUTORS)
+file. The listed people opted in to publishing their GitHub handles. Each entry
+has one capability:
 
 - `issue`: issues stay open.
 - `pr`: issues and pull requests stay open.
 
 The allowlist does not grant repository access. Invitations and organization
 membership are managed separately.
+
+Maintainers may reply `lgtmi` on an issue to approve its author for future
+issues, or `lgtm` to approve its author for future issues and pull requests.
+Contributors may also propose ordinary reviewed changes to the tracked list.
 
 ## Before Submitting A Pull Request
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export LC_ALL=C
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-allowlist="${CONTRIBUTOR_ALLOWLIST_FILE:-.github/APPROVED_CONTRIBUTORS.example}"
+allowlist="${CONTRIBUTOR_ALLOWLIST_FILE:-.github/APPROVED_CONTRIBUTORS}"
 if [[ ! -f "$allowlist" ]]; then
   printf 'ERROR: contributor allowlist is missing: %s\n' "$allowlist" >&2
   exit 1

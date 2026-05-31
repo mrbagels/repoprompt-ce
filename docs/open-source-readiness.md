@@ -76,13 +76,13 @@ The root [`LICENSE`](../LICENSE) provides the Apache License, Version 2.0 for or
 
 ## Remaining public-release blockers
 
-Completed account setup on 2026-05-31:
+Completed setup on 2026-05-31:
 
 - Registered the explicit Apple Developer App ID `com.pvncher.repoprompt.ce`.
 - Created and validated the `RepoPromptCEDeveloperID` Developer ID provisioning profile for `648A27MST5.com.pvncher.repoprompt.ce`.
 - Enabled App Store Connect API access, created a least-privilege `Developer` team key for notarization, and verified its credentials with a read-only `notarytool history` request.
 - Created the GitHub `release` environment, stored its Developer ID PKCS#12, export password, ephemeral CI keychain password, CE provisioning profile, CE Sparkle private key, and `NOTARYTOOL_*` secrets, and set the `SIGN_IDENTITY` environment variable.
-- Moved the contributor cohort into the `APPROVED_CONTRIBUTORS` repository secret. The future tree no longer tracks the cohort or the private claims-refresh script.
+- Kept the opted-in contributor cohort in the tracked `.github/APPROVED_CONTRIBUTORS` file so changes remain public and reviewable. The issue and pull-request gates read that default-branch file directly.
 
 Pre-public validation limitation:
 
@@ -98,7 +98,6 @@ Pre-public validation limitation:
 Remaining blockers:
 
 - Enable a GitHub configuration that exposes required-reviewer protection for the `release` environment, or document and enforce an equivalent maintainer approval gate before treating the publishing workflow as protected. The current private-repository settings do not expose a required-reviewer control.
-- Scrub the historical contributor cohort from existing git history before the repository is made public.
 - Finish the comprehensive notice inventory for SwiftPM dependencies.
 - Harden the public Sparkle promotion path before treating automatic updates as production-ready: validate that the CI private key matches the committed public key, publish an existing reviewed draft without rebuilding it, explicitly mark the intended stable tag as GitHub's latest release, and run anonymous post-publish feed, archive-signature, and checksum smoke checks.
 - Automate mirroring reviewed release assets into the public `repoprompt-ce-updates` repository. The maintainer-only [`Scripts/publish_public_update_test.sh`](../Scripts/publish_public_update_test.sh) helper provides the explicit private-repository smoke path in the meantime.
