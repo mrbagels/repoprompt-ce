@@ -19,15 +19,26 @@ class NotificationService: NSObject {
     static let shared = NotificationService()
 
     private var isAuthorized = false
-    private let center = UNUserNotificationCenter.current()
+    private lazy var center: UNUserNotificationCenter? = {
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            notificationServiceDebugLog("Skipping UserNotifications outside an app bundle")
+            return nil
+        }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        return center
+    }()
 
     override private init() {
         super.init()
-        center.delegate = self
     }
 
     /// Request notification authorization on app launch
     func requestAuthorization() async {
+        guard let center else {
+            isAuthorized = false
+            return
+        }
         do {
             let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
             isAuthorized = granted
@@ -116,6 +127,7 @@ class NotificationService: NSObject {
 
     /// Send the actual notification
     private func sendChatCompleteNotification(chatName: String?) {
+        guard let center else { return }
         let content = UNMutableNotificationContent()
         content.title = "Chat Complete"
 
@@ -145,6 +157,7 @@ class NotificationService: NSObject {
 
     /// Send the actual Context Builder complete notification
     private func notifyContextBuilderCompleted(tabName: String) {
+        guard let center else { return }
         let content = UNMutableNotificationContent()
         content.title = "Context Builder Complete"
         content.body = tabName
@@ -166,6 +179,7 @@ class NotificationService: NSObject {
     }
 
     private func sendAgentTurnCompleteNotification(sessionName: String?, previewText: String?, route: AgentSessionDeepLinkRoute?) {
+        guard let center else { return }
         let content = Self.agentTurnCompleteContent(sessionName: sessionName, previewText: previewText, route: route)
 
         let request = UNNotificationRequest(
@@ -182,6 +196,7 @@ class NotificationService: NSObject {
     }
 
     private func sendAgentWaitingForUserNotification(sessionName: String?, promptText: String?, route: AgentSessionDeepLinkRoute?) {
+        guard let center else { return }
         let content = Self.agentWaitingForUserContent(sessionName: sessionName, promptText: promptText, route: route)
 
         let request = UNNotificationRequest(
@@ -280,6 +295,10 @@ class NotificationService: NSObject {
 
     /// Check current authorization status
     func checkAuthorizationStatus() async -> Bool {
+        guard let center else {
+            isAuthorized = false
+            return false
+        }
         let settings = await center.notificationSettings()
         isAuthorized = settings.authorizationStatus == .authorized
         return isAuthorized
