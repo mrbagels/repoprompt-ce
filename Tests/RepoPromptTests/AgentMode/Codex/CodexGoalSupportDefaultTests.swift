@@ -36,14 +36,6 @@ final class CodexGoalSupportDefaultTests: XCTestCase {
         XCTAssertTrue(CodexGoalSupport.isEnabled(defaults: defaults))
     }
 
-    func testMissingUserDefaultsComputerUseKeyDefaultsDisabled() throws {
-        try skipIfEnvironmentFlagEnabled("RP_CODEX_COMPUTER_USE")
-        let defaults = try makeIsolatedDefaults()
-
-        XCTAssertNil(defaults.object(forKey: "enableCodexComputerUse"))
-        XCTAssertFalse(CodexComputerUseWorkflow.isEnabled(defaults: defaults))
-    }
-
     func testMissingGlobalSettingsGoalScalarDefaultsEnabled() throws {
         let store = try makeStore(document: GlobalSettingsDocument(
             scalarPreferences: GlobalScalarPreferences(agentMode: .init())
@@ -105,7 +97,6 @@ final class CodexGoalSupportDefaultTests: XCTestCase {
     private func resetTestingOverrides() {
         #if DEBUG
             CodexGoalSupport.setEnabledForTesting(nil)
-            CodexComputerUseWorkflow.setEnabledForTesting(nil)
         #endif
     }
 }

@@ -229,7 +229,7 @@ struct CodexProviderToolsRuntimeSection: View {
                 isOn: tools.goalSupportEnabled,
                 onChange: onSetGoalSupportEnabled
             )
-            .help("Controls Codex features.goals for app-server launch and thread config; enabled by default until turned off.")
+            .hoverTooltip("Controls Codex features.goals for app-server launch and thread config; enabled by default until turned off.")
 
             ProviderRuntimeSubsection(
                 title: "MCP servers",

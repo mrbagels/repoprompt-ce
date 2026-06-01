@@ -817,11 +817,9 @@ final class CodexNativeSessionController {
             let configOverrides = await options.configOverridesProvider()
             let pathValue = existing?.rolloutPath
             let existingID = existing?.conversationID ?? ""
-            let shouldResumeExistingThread = existing != nil && (!existingID.isEmpty || pathValue != nil)
-            let startsFreshEphemeralThread = !shouldResumeExistingThread && options.startNewThreadsEphemerally
             let result: [String: Any]
 
-            if shouldResumeExistingThread {
+            if existing != nil, !existingID.isEmpty || pathValue != nil {
                 var params: [String: Any] = [:]
                 if !existingID.isEmpty {
                     params["threadId"] = existingID
@@ -890,9 +888,7 @@ final class CodexNativeSessionController {
             }
 
             let pendingSessionRef = Self.parseThreadSnapshot(from: result, fallbackEffort: reasoningEffort).sessionRef
-            if !startsFreshEphemeralThread {
-                try await disableThreadMemoryMode(threadID: pendingSessionRef.conversationID)
-            }
+            try await disableThreadMemoryMode(threadID: pendingSessionRef.conversationID)
 
             let sessionRef = try await eventHandlingMutex.withLock {
                 try ensureBindingCanComplete()

@@ -1218,7 +1218,7 @@ struct AgentComposerView: View, Equatable {
                             actions.setCodexGoalSupportEnabled(newValue)
                         }
                     ))
-                    .help("Codex /goal support is enabled by default. Turn this off to stop RepoPrompt from enabling features.goals for Codex app-server launch and thread config.")
+                    .hoverTooltip("Codex /goal support is enabled by default. Turn this off to stop RepoPrompt from enabling features.goals for Codex app-server launch and thread config.")
                 } header: {
                     Text("Tools")
                 }

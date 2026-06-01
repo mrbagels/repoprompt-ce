@@ -49,25 +49,6 @@ final class CodexNativeSessionControllerThreadStartTests: XCTestCase {
 
         let params = try recordedParams(for: "thread/resume", at: recordURL)
         XCTAssertNil(params["ephemeral"])
-        XCTAssertTrue(try recordedMethods(at: recordURL).contains("thread/memoryMode/set"))
-    }
-
-    func testFreshEphemeralThreadSkipsMemoryModeMetadataWrite() async throws {
-        let (controller, recordURL) = try await makeController(options: makeStandardChatOptions(startNewThreadsEphemerally: true))
-
-        _ = try await controller.startOrResume(existing: nil, baseInstructions: "Oracle")
-        await controller.shutdown()
-
-        XCTAssertFalse(try recordedMethods(at: recordURL).contains("thread/memoryMode/set"))
-    }
-
-    func testFreshNonEphemeralThreadDisablesMemoryMode() async throws {
-        let (controller, recordURL) = try await makeController(options: makeStandardChatOptions(startNewThreadsEphemerally: false))
-
-        _ = try await controller.startOrResume(existing: nil, baseInstructions: "Chat")
-        await controller.shutdown()
-
-        XCTAssertTrue(try recordedMethods(at: recordURL).contains("thread/memoryMode/set"))
     }
 
     func testAgentModeDefaultCarriesGoalFeatureConfigToStartAndResume() async throws {
@@ -196,16 +177,6 @@ final class CodexNativeSessionControllerThreadStartTests: XCTestCase {
         }
         XCTFail("No \(method) request was recorded")
         return [:]
-    }
-
-    private func recordedMethods(at recordURL: URL) throws -> [String] {
-        let data = try Data(contentsOf: recordURL)
-        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
-        return try text.split(whereSeparator: { $0.isNewline }).compactMap { line in
-            let lineData = try XCTUnwrap(String(line).data(using: .utf8))
-            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: lineData) as? [String: Any])
-            return object["method"] as? String
-        }
     }
 
     private func assertGoalFeatureEnabledAndComputerUseDisabled(

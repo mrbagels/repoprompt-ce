@@ -135,10 +135,6 @@ enum CodexComputerUseWorkflow {
         CodexNativeFeatureGate.computerUse.isEnabled(persistedValue: false)
     }
 
-    static func isEnabled(defaults: UserDefaults) -> Bool {
-        CodexNativeFeatureGate.computerUse.isEnabled(defaults: defaults)
-    }
-
     #if DEBUG
         static func setEnabledForTesting(_ value: Bool?) {
             CodexNativeFeatureGate.computerUse.setEnabledForTesting(value)
