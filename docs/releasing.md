@@ -169,22 +169,29 @@ Use **Signed Test Build** when a write-access collaborator needs a real
 Developer ID signed and notarized build before the code is ready for a public
 release tag.
 
-Dispatch the workflow from protected `main` and enter an upstream branch, tag,
-or upstream-reachable commit SHA in `source_ref`. Raw SHAs are allowed only when
-the resolved commit is already reachable from a branch or tag in the canonical
-upstream repository. Do not use fork or pull-request refs for this lane; have
-the collaborator push an inspectable branch to the upstream repository first.
-The workflow rejects fork shorthand, `refs/pull/*` inputs, and unreachable
-SHA-only commits before staging.
+Dispatch the workflow from protected `main` and enter an exact upstream branch,
+exact upstream tag, or full 40-character commit SHA in `source_ref`. Short
+branch/tag names and explicit `refs/heads/<branch>` or `refs/tags/<tag>` inputs
+are accepted. Raw SHAs are allowed only when the resolved commit is already
+reachable from a branch or tag in the canonical upstream repository. Do not use
+fork or pull-request refs for this lane; have the collaborator push an
+inspectable branch to the upstream repository first. The workflow rejects fork
+shorthand, `refs/pull/*` inputs, remote refs, short SHAs, revspecs such as
+`main~1` or `main^`, ambiguous branch/tag names, and unreachable SHA-only
+commits before staging.
 
 The unprotected job checks out trusted release tooling from `main`, checks out
-the requested source ref separately, verifies that the resolved source commit is
+the requested source ref separately, verifies that the literal requested ref
+resolves exactly to the checked-out source commit and that the commit is
 reachable from canonical upstream branch or tag refs, strips GitHub tokens
 before SwiftPM-driven commands, builds an ad-hoc release-mode app, and uploads a
 short-lived staged artifact. The protected `sign` job uses the `release`
 environment, so it pauses for required reviewer approval before importing the
 Developer ID certificate, provisioning profile, and notarization key. After
-approval, trusted tooling verifies the staged payload against a data-only
+approval, trusted tooling revalidates the same requested ref against the
+approved-source checkout before importing signing material. If the branch or tag
+was deleted, force-pushed, or no longer reaches the validated commit, signing
+fails. The signing path then verifies the staged payload against a data-only
 checkout of the requested commit, replaces the staged Sparkle framework with the
 trusted closed-world copy, signs, notarizes, staples, and uploads ZIP, DMG,
 checksum, and provenance workflow artifacts.
@@ -193,8 +200,8 @@ Signed test builds do not create GitHub Releases, do not publish updater
 assets, and do not use the Sparkle private key. Each final artifact set includes
 a `signed-test-provenance.json` file that records the requested ref, resolved
 source commit, trusted tooling commit, workflow run URL, signing mode,
-reachable upstream refs, and ZIP, DMG, checksum manifest, and staged source
-archive hashes. A fresh secret-free smoke job downloads the signed ZIP,
+sign-time reachable upstream refs, and ZIP, DMG, checksum manifest, and staged
+source archive hashes. A fresh secret-free smoke job downloads the signed ZIP,
 validates the provenance hash bindings and embedded MCP helper layout, and runs
 the helper `--version` smoke under a minimal environment.
 

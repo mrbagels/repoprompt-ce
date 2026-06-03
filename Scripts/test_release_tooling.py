@@ -203,8 +203,13 @@ class ReleaseToolingTests(unittest.TestCase):
         self.assertIn("release-source/dist/*.zip", signed_test_sign)
         self.assertIn("release-source/dist/*.dmg", signed_test_sign)
         self.assertIn("release-source/dist/*-signed-test-provenance.json", signed_test_sign)
+        self.assertIn("Revalidate source ref after release approval", signed_test_sign)
+        self.assertIn("id: sign-source-ref", signed_test_sign)
+        self.assertIn("Require sign-time source ref to match validated commit", signed_test_sign)
+        self.assertLess(signed_test_sign.index("Revalidate source ref after release approval"), signed_test_sign.index("Import Developer ID certificate"))
         self.assertIn("SIGNED_TEST_SOURCE_REF", signed_test_sign)
-        self.assertIn("SIGNED_TEST_REACHABLE_REFS", signed_test_sign)
+        self.assertIn("SIGNED_TEST_REACHABLE_REFS: ${{ steps.sign-source-ref.outputs.reachable_refs }}", signed_test_sign)
+        self.assertNotIn("SIGNED_TEST_REACHABLE_REFS: ${{ needs.validate-ref.outputs.reachable_refs }}", signed_test_sign)
         self.assertIn("SIGNED_TEST_TOOLING_COMMIT", signed_test_sign)
         self.assertIn("SIGNED_TEST_WORKFLOW_RUN_URL", signed_test_sign)
         self.assertNotIn("gh release create", signed_test_sign)
@@ -215,6 +220,9 @@ class ReleaseToolingTests(unittest.TestCase):
         self.assertIn("RepoPrompt-CE-signed-test-build", signed_test_smoke)
         self.assertIn("provenances=(signed-test-build/*-signed-test-provenance.json)", signed_test_smoke)
         self.assertIn("Expected exactly one signed test provenance file", signed_test_smoke)
+        self.assertIn("EXPECTED_REQUESTED_REF: ${{ inputs.source_ref }}", signed_test_smoke)
+        self.assertIn('os.environ["EXPECTED_REQUESTED_REF"]', signed_test_smoke)
+        self.assertNotIn('provenance["requested_ref"] != "${{ inputs.source_ref }}"', signed_test_smoke)
         self.assertIn("Provenance requested ref mismatch", signed_test_smoke)
         self.assertIn("Provenance source commit mismatch", signed_test_smoke)
         self.assertIn("Provenance workflow run URL mismatch", signed_test_smoke)
@@ -648,13 +656,14 @@ class ReleaseToolingTests(unittest.TestCase):
         self.assertIn("canonical", result.stderr)
 
 
-    def test_signed_test_build_ref_helper_requires_upstream_reachability(self) -> None:
+    def test_signed_test_build_ref_helper_requires_exact_ref_and_upstream_reachability(self) -> None:
         remote, work = self.make_git_remote()
         first = self.commit_file(work, "first")
         self.git(work, "tag", "v1.0.0")
-        self.git(work, "push", "origin", "main", "v1.0.0")
+        self.git(work, "tag", "-a", "v1.0.0-annotated", "-m", "annotated")
+        self.git(work, "push", "origin", "main", "v1.0.0", "v1.0.0-annotated")
 
-        for source_ref in ("main", "v1.0.0", first):
+        for source_ref in ("main", "refs/heads/main", "v1.0.0", "refs/tags/v1.0.0", "v1.0.0-annotated", first):
             with self.subTest(source_ref=source_ref):
                 self.git(work, "checkout", source_ref)
                 accepted = self.run_signed_test_ref_verify(work, source_ref)
@@ -668,14 +677,48 @@ class ReleaseToolingTests(unittest.TestCase):
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("not reachable from any upstream branch or tag", rejected.stderr)
 
+    def test_signed_test_build_ref_helper_rejects_commitish_and_mismatched_inputs(self) -> None:
+        remote, work = self.make_git_remote()
+        first = self.commit_file(work, "first")
+        self.git(work, "push", "origin", "main")
+        second = self.commit_file(work, "second")
+        self.git(work, "push", "origin", "main")
+
+        for source_ref in ("main~1", "main^", "main..HEAD", first[:12], "refs/remotes/origin/main"):
+            with self.subTest(source_ref=source_ref):
+                self.git(work, "checkout", first)
+                result = self.run_signed_test_ref_verify(work, source_ref)
+                self.assertNotEqual(result.returncode, 0)
+
+        self.git(work, "checkout", first)
+        mismatched = self.run_signed_test_ref_verify(work, "main")
+        self.assertNotEqual(mismatched.returncode, 0)
+        self.assertIn("checkout HEAD", mismatched.stderr)
+
+    def test_signed_test_build_ref_helper_rejects_ambiguous_branch_tag_names(self) -> None:
+        remote, work = self.make_git_remote()
+        self.commit_file(work, "first")
+        self.git(work, "push", "origin", "main")
+        self.git(work, "checkout", "-b", "ambiguous")
+        self.commit_file(work, "branch")
+        self.git(work, "push", "origin", "ambiguous")
+        self.git(work, "checkout", "main")
+        self.git(work, "tag", "ambiguous")
+        self.git(work, "push", "origin", "refs/tags/ambiguous")
+
+        self.git(work, "checkout", "refs/heads/ambiguous")
+        rejected = self.run_signed_test_ref_verify(work, "ambiguous")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("ambiguous", rejected.stderr)
+
     def test_signed_test_build_ref_helper_rejects_pr_and_fork_refs(self) -> None:
         remote, work = self.make_git_remote()
         self.commit_file(work, "first")
         self.git(work, "push", "origin", "main")
 
         for source_ref, expected in (
-            ("refs/pull/123/head", "pull-request ref"),
-            ("pull/123/head", "pull-request ref"),
+            ("refs/pull/123/head", "pull-request"),
+            ("pull/123/head", "pull-request"),
             ("someuser:branch", "fork shorthand refs"),
         ):
             with self.subTest(source_ref=source_ref):
@@ -686,11 +729,12 @@ class ReleaseToolingTests(unittest.TestCase):
     def test_signed_test_build_docs_describe_reachability_and_provenance(self) -> None:
         docs = (SCRIPT_DIR.parent / "docs" / "releasing.md").read_text(encoding="utf-8")
 
-        self.assertIn("upstream-reachable commit SHA", docs)
+        self.assertIn("full 40-character commit SHA", docs)
         self.assertIn("unreachable", docs)
-        self.assertIn("SHA-only commits", docs)
+        self.assertIn("revspecs", docs)
+        self.assertIn("`sign` job", docs)
         self.assertIn("signed-test-provenance.json", docs)
-        self.assertIn("resolved source commit", docs)
+        self.assertIn("source commit", docs)
         self.assertIn("trusted tooling commit", docs)
         self.assertIn("workflow run URL", docs)
         self.assertIn("ZIP, DMG, checksum manifest", docs)
