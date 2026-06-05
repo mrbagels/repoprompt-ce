@@ -625,7 +625,7 @@ private struct AgentExecutionLocationPill: View {
             icon: icon,
             title: title ?? selection.label,
             subtitle: subtitle,
-            tooltip: tooltip ?? selection.label,
+            tooltip: tooltip,
             isSelected: isSelected(selection),
             isDisabled: isDisabled,
             fontPreset: fontPreset,
@@ -641,7 +641,7 @@ private struct AgentExecutionLocationPill: View {
         let icon: String
         let title: String
         let subtitle: String?
-        let tooltip: String
+        let tooltip: String?
         let isSelected: Bool
         let isDisabled: Bool
         let fontPreset: FontScalePreset
@@ -687,7 +687,7 @@ private struct AgentExecutionLocationPill: View {
                 )
             )
             .hoverTooltip(tooltip, .top)
-            .accessibilityHint(isDisabled ? "Unavailable" : tooltip)
+            .accessibilityHint(isDisabled ? "Unavailable" : (tooltip ?? title))
         }
     }
 
