@@ -53,7 +53,6 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertEqual(previewText, "let origin = \"worktree\"\n")
         XCTAssertFalse(previewText?.contains("base") ?? true)
 
-        let codemapSnapshots = await fixture.store.codemapSnapshotDictionary()
         let clipboard = await AgentContextExportResolver.buildClipboardContent(
             AgentContextClipboardRequest(
                 cfg: makeConfig(gitInclusion: .none),
@@ -63,7 +62,6 @@ final class AgentContextExportResolverTests: XCTestCase {
                 filePathDisplay: .relative,
                 onlyIncludeRootsWithSelectedFiles: true,
                 showCodeMapMarkers: true,
-                codemapSnapshots: codemapSnapshots,
                 metaInstructions: [],
                 includeDatetimeInUserInstructions: false,
                 promptSectionsOrder: PromptAssemblyBuilder.defaultSectionOrder,
@@ -77,6 +75,35 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertTrue(clipboard.contains("Sources/App.swift"), clipboard)
         XCTAssertTrue(clipboard.contains("let origin = \"worktree\""), clipboard)
         XCTAssertFalse(clipboard.contains("let origin = \"base\""), clipboard)
+    }
+
+    func testBoundExportFailsClosedWhenPhysicalWorktreeCannotBeLoaded() async throws {
+        let logicalRoot = try makeTemporaryRoot(name: "AgentExportMissingLogical")
+        try write("let origin = \"base\"\n", to: logicalRoot.appendingPathComponent("Sources/App.swift"))
+
+        let store = WorkspaceFileContextStore()
+        _ = try await store.loadRoot(path: logicalRoot.path)
+        // Reusing the visible logical root as the bound physical root forces session-worktree
+        // materialization to fail closed instead of silently reading the visible/base checkout.
+        let unloadablePhysicalRoot = logicalRoot
+        let source = makeSource(
+            logicalRoot: logicalRoot,
+            worktreeRoot: unloadablePhysicalRoot,
+            selection: StoredSelection(selectedPaths: ["Sources/App.swift"], codemapAutoEnabled: false)
+        )
+
+        let model = await AgentContextExportResolver.resolveModel(
+            source: source,
+            store: store,
+            filePathDisplay: .relative,
+            codeMapUsage: .none
+        )
+        let expectedPhysicalPath = unloadablePhysicalRoot.appendingPathComponent("Sources/App.swift").standardizedFileURL.path
+
+        XCTAssertEqual(model.lookupContext.bindingProjection?.physicalRootPaths, Set([unloadablePhysicalRoot.standardizedFileURL.path]))
+        XCTAssertTrue(model.rows.isEmpty)
+        XCTAssertEqual(model.missingPaths, [expectedPhysicalPath])
+        XCTAssertFalse(model.rows.contains { $0.displayPath == "Sources/App.swift" })
     }
 
     func testRemoveRowMutatesLogicalStoredSelectionByPhysicalizedPath() async throws {
@@ -392,10 +419,13 @@ final class AgentContextExportResolverTests: XCTestCase {
         let lookupContext = await AgentContextExportResolver.lookupContext(source: source, store: fixture.store)
         let physicalSelection = lookupContext.physicalizeSelection(source.selection)
 
-        let paths = await AgentContextExportResolver.selectedGitDiffPaths(
+        let paths = await WorkspaceGitDiffSelectionResolver.selectedGitDiffPaths(
             for: physicalSelection,
             store: fixture.store,
-            rootScope: lookupContext.rootScope
+            rootScope: lookupContext.rootScope,
+            folderPolicy: .filesOnly,
+            profile: .mcpSelection,
+            allowFilesystemFallback: lookupContext.rootScope.allowsSelectedGitDiffFilesystemFallback
         )
 
         XCTAssertEqual(paths, [fixture.worktreeRoot.appendingPathComponent("Sources/App.swift").standardizedFileURL.path])
@@ -411,7 +441,6 @@ final class AgentContextExportResolverTests: XCTestCase {
         )
         let lookupContext = await AgentContextExportResolver.lookupContext(source: source, store: fixture.store)
 
-        let codemapSnapshots = await fixture.store.codemapSnapshotDictionary()
         let clipboard = await AgentContextExportResolver.buildClipboardContent(
             AgentContextClipboardRequest(
                 cfg: makeConfig(gitInclusion: .complete),
@@ -421,7 +450,6 @@ final class AgentContextExportResolverTests: XCTestCase {
                 filePathDisplay: .relative,
                 onlyIncludeRootsWithSelectedFiles: true,
                 showCodeMapMarkers: true,
-                codemapSnapshots: codemapSnapshots,
                 metaInstructions: [],
                 includeDatetimeInUserInstructions: false,
                 promptSectionsOrder: PromptAssemblyBuilder.defaultSectionOrder,
@@ -432,7 +460,7 @@ final class AgentContextExportResolverTests: XCTestCase {
             )
         )
 
-        XCTAssertTrue(clipboard.contains(AgentContextExportResolver.deferredCompleteWorktreeGitDiffMessage), clipboard)
+        XCTAssertTrue(clipboard.contains(PromptContextGitDiffPolicy.deferredCompleteWorktreeGitDiffMessage), clipboard)
         XCTAssertFalse(clipboard.contains("base checkout complete diff must not appear"), clipboard)
     }
 

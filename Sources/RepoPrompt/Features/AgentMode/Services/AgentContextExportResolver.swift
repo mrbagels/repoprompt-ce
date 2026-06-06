@@ -134,7 +134,6 @@ struct AgentContextClipboardRequest {
     let filePathDisplay: FilePathDisplay
     let onlyIncludeRootsWithSelectedFiles: Bool
     let showCodeMapMarkers: Bool
-    let codemapSnapshots: [UUID: WorkspaceCodemapSnapshot]
     let metaInstructions: [MetaInstruction]
     let includeDatetimeInUserInstructions: Bool
     let promptSectionsOrder: [PromptSection]
@@ -149,8 +148,6 @@ enum AgentContextExportResolver {
         let entry: ResolvedPromptFileEntry
         let canRemove: Bool
     }
-
-    static let deferredCompleteWorktreeGitDiffMessage = "Complete git diff export is not available for worktree-bound Agent context yet; this export intentionally omits the base-checkout complete diff. Use selected-file diff or MCP workspace_context export for worktree-aware diff details."
 
     static func selectionFileCount(_ selection: StoredSelection) -> Int {
         var seen = Set<String>()
@@ -228,77 +225,44 @@ enum AgentContextExportResolver {
 
     static func buildClipboardContent(_ request: AgentContextClipboardRequest) async -> String {
         let cfg = request.cfg
-        let physicalSelection = request.lookupContext.physicalizeSelection(request.source.selection)
-        let accountingService = PromptContextAccountingService()
-        let resolution = await accountingService.resolveEntries(
-            selection: physicalSelection,
-            store: request.store,
-            rootScope: request.lookupContext.rootScope,
-            profile: .uiAssisted,
-            codeMapUsage: cfg.codeMapUsage
-        )
-
-        let combinedTreeAndMap: String?
-        if cfg.rendersFileTree {
-            let rawFileTreeSnapshot = await request.store.makeFileTreeSelectionSnapshot(
-                selection: physicalSelection,
-                request: WorkspaceFileTreeSnapshotRequest(
-                    mode: WorkspaceFileTreeSnapshotMode(fileTreeOption: cfg.effectiveFileTreeMode),
-                    filePathDisplay: request.filePathDisplay,
-                    onlyIncludeRootsWithSelectedFiles: request.onlyIncludeRootsWithSelectedFiles,
-                    includeLegend: true,
-                    showCodeMapMarkers: request.showCodeMapMarkers,
-                    rootScope: request.lookupContext.rootScope
-                ),
-                profile: .uiAssisted
-            )
-            let fileTreeSnapshot = request.lookupContext.bindingProjection?.logicalizeFileTreeSnapshot(rawFileTreeSnapshot) ?? rawFileTreeSnapshot
-            let tree = CodeMapExtractor.generateFileTree(using: fileTreeSnapshot)
-            combinedTreeAndMap = tree.isEmpty ? nil : tree
-        } else {
-            combinedTreeAndMap = nil
-        }
-
-        let (diffEntries, _) = PromptPackagingService.partitionPromptEntriesForGitDiff(resolution.entries)
-        let gitDiff: String?
-        switch cfg.gitInclusion {
-        case .none:
-            gitDiff = nil
-        case .selected:
-            let selectedPaths = await selectedGitDiffPaths(
-                for: physicalSelection,
+        let preAssembly = await PromptContextPreAssemblyService.resolve(
+            PromptContextPreAssemblyRequest(
+                cfg: cfg,
+                selection: request.source.selection,
                 store: request.store,
-                rootScope: request.lookupContext.rootScope
+                lookupContext: request.lookupContext,
+                filePathDisplay: request.filePathDisplay,
+                onlyIncludeRootsWithSelectedFiles: request.onlyIncludeRootsWithSelectedFiles,
+                showCodeMapMarkers: request.showCodeMapMarkers,
+                selectedGitDiffFolderPolicy: .filesOnly,
+                selectedGitDiffLookupProfile: .mcpSelection,
+                selectedGitDiffArtifactPolicy: .respectGitInclusion,
+                selectedGitDiffProvider: { paths in
+                    await request.selectedGitDiffProvider(paths)
+                },
+                completeGitDiffProvider: {
+                    await request.completeGitDiffProvider()
+                }
             )
-            gitDiff = diffEntries.isEmpty ? await request.selectedGitDiffProvider(selectedPaths) : nil
-        case .complete:
-            if request.lookupContext.bindingProjection != nil {
-                gitDiff = deferredCompleteWorktreeGitDiffMessage
-            } else {
-                gitDiff = diffEntries.isEmpty ? await request.completeGitDiffProvider() : nil
-            }
-        }
+        )
 
         return await PromptPackagingService.generateClipboardContent(
             metaInstructions: request.metaInstructions,
             userInstructions: cfg.includeUserPrompt ? request.source.promptText : "",
-            files: resolution.entries,
-            fileTreeContent: combinedTreeAndMap,
-            gitDiff: gitDiff,
+            files: preAssembly.entries,
+            fileTreeContent: preAssembly.fileTreeContent,
+            gitDiff: preAssembly.gitDiff,
             includeSavedPrompts: !request.metaInstructions.isEmpty,
             includeFiles: cfg.includeFiles,
             includeUserPrompt: cfg.includeUserPrompt,
             filePathDisplay: request.filePathDisplay,
-            codemapSnapshots: request.codemapSnapshots,
+            codemapSnapshots: preAssembly.codemapSnapshots,
             includeDatetimeInUserInstructions: request.includeDatetimeInUserInstructions,
             promptSectionsOrder: request.promptSectionsOrder,
             disabledPromptSections: request.disabledPromptSections,
             duplicateUserInstructionsAtTop: request.duplicateUserInstructionsAtTop,
             displayPathResolver: { entry in
-                request.lookupContext.bindingProjection?.projectedLogicalDisplayPath(
-                    forPhysicalPath: entry.file.standardizedFullPath,
-                    display: request.filePathDisplay
-                )
+                preAssembly.displayPath(for: entry)
             }
         )
     }
@@ -355,23 +319,6 @@ enum AgentContextExportResolver {
             autoCodemapPaths: autoCodemapPaths,
             slices: slices,
             codemapAutoEnabled: selection.codemapAutoEnabled
-        )
-    }
-
-    static func selectedGitDiffPaths(
-        for selection: StoredSelection,
-        store: WorkspaceFileContextStore,
-        rootScope: WorkspaceLookupRootScope
-    ) async -> [String] {
-        let candidates = gitDiffCandidates(from: selection)
-        guard !candidates.isEmpty else { return [] }
-        let resolvedFiles = await store.lookupFiles(atPaths: candidates, profile: .mcpSelection, rootScope: rootScope)
-        let resolvedMap = resolvedFiles.mapValues { $0.standardizedFullPath }
-        return resolveGitDiffPaths(
-            candidates: candidates,
-            resolvedMap: resolvedMap,
-            normalizeUserInput: { ($0 as NSString).expandingTildeInPath.trimmingCharacters(in: .whitespacesAndNewlines) },
-            fileExists: { FileManager.default.fileExists(atPath: $0) }
         )
     }
 
@@ -683,45 +630,5 @@ enum AgentContextExportResolver {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let expanded = (trimmed as NSString).expandingTildeInPath
         return expanded.hasPrefix("/") ? StandardizedPath.absolute(expanded) : StandardizedPath.relative(expanded)
-    }
-
-    private static func gitDiffCandidates(from selection: StoredSelection) -> [String] {
-        var candidates = StoredSelectionPathNormalization.standardizedPaths(selection.selectedPaths)
-        var seen = Set(candidates)
-        for (path, ranges) in StoredSelectionPathNormalization.standardizedSlices(selection.slices) where !ranges.isEmpty {
-            guard seen.insert(path).inserted else { continue }
-            candidates.append(path)
-        }
-        return candidates
-    }
-
-    private static func resolveGitDiffPaths(
-        candidates: [String],
-        resolvedMap: [String: String],
-        normalizeUserInput: (String) -> String,
-        fileExists: (String) -> Bool
-    ) -> [String] {
-        var seen = Set<String>()
-        var results: [String] = []
-        results.reserveCapacity(candidates.count)
-
-        for raw in candidates {
-            if let resolved = resolvedMap[raw] {
-                let std = StandardizedPath.absolute(resolved)
-                if seen.insert(std).inserted {
-                    results.append(std)
-                }
-                continue
-            }
-
-            let normalized = normalizeUserInput(raw)
-            guard normalized.hasPrefix("/") else { continue }
-            let std = StandardizedPath.absolute(normalized)
-            if fileExists(std), seen.insert(std).inserted {
-                results.append(std)
-            }
-        }
-
-        return results
     }
 }

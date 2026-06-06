@@ -228,6 +228,49 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
         )
     }
 
+    func testMaterializerFailsClosedWhenPhysicalRootCannotBeLoaded() async throws {
+        let logicalRootURL = try makeTemporaryRoot(name: "ProjectionLogical")
+        try write("let origin = \"base\"\n", to: logicalRootURL.appendingPathComponent("Sources/App.swift"))
+
+        let store = WorkspaceFileContextStore()
+        let loadedLogicalRoot = try await store.loadRoot(path: logicalRootURL.path)
+        let logicalRoot = WorkspaceRootRef(
+            id: loadedLogicalRoot.id,
+            name: loadedLogicalRoot.name,
+            fullPath: loadedLogicalRoot.standardizedFullPath
+        )
+        // Reusing the already-loaded logical root as the bound physical root forces
+        // `.sessionWorktree` materialization to fail with a different root configuration.
+        let unloadablePhysicalRoot = logicalRootURL
+        let physicalRoot = WorkspaceRootRef(
+            id: UUID(),
+            name: logicalRoot.name,
+            fullPath: unloadablePhysicalRoot.path
+        )
+        let binding = Self.binding(logicalRoot: logicalRoot, physicalRoot: physicalRoot, worktreeID: "missing")
+
+        let materializedProjection = await WorkspaceRootBindingProjectionMaterializer(store: store).materialize(
+            sessionID: UUID(),
+            bindings: [binding]
+        )
+        let projection = try XCTUnwrap(materializedProjection)
+        let lookupContext = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
+        let physicalSelection = lookupContext.physicalizeSelection(StoredSelection(
+            selectedPaths: ["Sources/App.swift"],
+            codemapAutoEnabled: false
+        ))
+        let physicalPath = try XCTUnwrap(physicalSelection.selectedPaths.first)
+
+        let boundLookup = await store.lookupPath(physicalPath, profile: .uiAssisted, rootScope: lookupContext.rootScope)
+        let visibleLookup = await store.lookupPath("Sources/App.swift", profile: .uiAssisted, rootScope: .visibleWorkspace)
+        let scopedRoots = await store.rootRefs(scope: lookupContext.rootScope)
+
+        XCTAssertEqual(physicalPath, unloadablePhysicalRoot.appendingPathComponent("Sources/App.swift").standardizedFileURL.path)
+        XCTAssertNil(boundLookup)
+        XCTAssertNotNil(visibleLookup)
+        XCTAssertFalse(scopedRoots.contains { $0.standardizedFullPath == logicalRoot.standardizedFullPath })
+    }
+
     private static func binding(
         logicalRoot: WorkspaceRootRef,
         physicalRoot: WorkspaceRootRef,
@@ -244,5 +287,19 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
             worktreeName: physicalRoot.fullPath.split(separator: "/").last.map(String.init),
             source: "test"
         )
+    }
+
+    private func makeTemporaryRoot(name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoPromptTests", isDirectory: true)
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    private func write(_ content: String, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try content.write(to: url, atomically: true, encoding: .utf8)
     }
 }

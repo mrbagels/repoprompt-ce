@@ -117,7 +117,14 @@ extension MCPServerViewModel {
         case .none:
             return nil
         case .selected:
-            let selectedPaths = await gitDiffPaths(for: selection)
+            let selectedPaths = await WorkspaceGitDiffSelectionResolver.selectedGitDiffPaths(
+                for: selection,
+                store: promptVM.workspaceFileContextStore,
+                rootScope: .allLoaded,
+                folderPolicy: .filesOnly,
+                profile: .mcpSelection,
+                allowFilesystemFallback: WorkspaceLookupRootScope.allLoaded.allowsSelectedGitDiffFilesystemFallback
+            )
             return await promptVM.gitViewModel.getDiffForAbsolutePaths(selectedPaths, forceRefreshStatus: true)
         case .complete:
             return await promptVM.gitViewModel.getDiffUsing(inclusionMode: .all, forceRefreshStatus: true)

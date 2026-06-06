@@ -66,14 +66,59 @@ final class AgentGitBranchSwitchRelevanceTests: XCTestCase {
         XCTAssertTrue(relevant)
     }
 
-    private func makeBinding(logicalRootPath: String, worktreeRootPath: String) -> AgentSessionWorktreeBinding {
+    func testInAppSwitchUpdatesMatchingWorktreeBindingMetadata() {
+        let matching = makeBinding(
+            logicalRootPath: "/repo/base",
+            worktreeRootPath: "/repo/.worktrees/feature"
+        )
+        let other = makeBinding(
+            logicalRootPath: "/repo/base",
+            worktreeRootPath: "/repo/.worktrees/other",
+            worktreeID: "other-worktree"
+        )
+
+        let update = AgentModeViewModel.updatedWorktreeBindingsAfterBranchSwitch(
+            [matching, other],
+            switchedCheckoutCandidatePaths: ["/repo/.worktrees/feature"],
+            branch: "feature/new",
+            head: "new-head"
+        )
+
+        XCTAssertTrue(update.didUpdate)
+        XCTAssertEqual(update.bindings[0].branch, "feature/new")
+        XCTAssertEqual(update.bindings[0].head, "new-head")
+        XCTAssertEqual(update.bindings[1], other)
+    }
+
+    func testInAppSwitchDoesNotUpdateBindingWhenOnlyLogicalBaseRootMatches() {
+        let binding = makeBinding(
+            logicalRootPath: "/repo/base",
+            worktreeRootPath: "/repo/.worktrees/feature"
+        )
+
+        let update = AgentModeViewModel.updatedWorktreeBindingsAfterBranchSwitch(
+            [binding],
+            switchedCheckoutCandidatePaths: ["/repo/base"],
+            branch: "main",
+            head: "base-head"
+        )
+
+        XCTAssertFalse(update.didUpdate)
+        XCTAssertEqual(update.bindings, [binding])
+    }
+
+    private func makeBinding(
+        logicalRootPath: String,
+        worktreeRootPath: String,
+        worktreeID: String = "worktree-id"
+    ) -> AgentSessionWorktreeBinding {
         AgentSessionWorktreeBinding(
             id: "binding",
             repositoryID: "repo-id",
             repoKey: "repo",
             logicalRootPath: logicalRootPath,
             logicalRootName: "base",
-            worktreeID: "worktree-id",
+            worktreeID: worktreeID,
             worktreeRootPath: worktreeRootPath,
             worktreeName: "feature",
             branch: "feature/old",

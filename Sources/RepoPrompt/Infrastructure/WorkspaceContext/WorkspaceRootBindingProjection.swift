@@ -298,6 +298,12 @@ struct WorkspaceRootBindingProjectionMaterializer {
                     fullPath: physicalRecord.standardizedFullPath
                 )
             } catch {
+                // Fail closed for bound sessions: keep the logical -> physical projection so
+                // display paths and complete-diff policy still know this session is worktree-bound,
+                // but do not substitute the logical/base root when the physical worktree cannot be
+                // loaded. `sessionBoundWorkspace` scopes only include actually loaded
+                // `.sessionWorktree` roots, so lookups against this fabricated ref miss instead of
+                // reading stale base-checkout content.
                 physicalRoot = WorkspaceRootRef(
                     id: UUID(),
                     name: logicalRoot.name,

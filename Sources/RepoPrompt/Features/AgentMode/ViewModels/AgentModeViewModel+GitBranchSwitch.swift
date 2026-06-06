@@ -125,25 +125,40 @@ extension AgentModeViewModel {
         row: AgentWorkspaceRootRow,
         result: GitBranchSwitchResult
     ) -> Bool {
-        guard !session.worktreeBindings.isEmpty else { return false }
-        let candidateIdentities = Set(branchSwitchCandidatePaths(row: row, result: result).compactMap(CheckoutPathIdentity.init))
-        guard !candidateIdentities.isEmpty else { return false }
+        let update = Self.updatedWorktreeBindingsAfterBranchSwitch(
+            session.worktreeBindings,
+            switchedCheckoutCandidatePaths: branchSwitchCandidatePaths(row: row, result: result),
+            branch: result.newBranch,
+            head: result.newHead
+        )
+        guard update.didUpdate else { return false }
+        session.worktreeBindings = update.bindings
+        session.isDirty = true
+        return true
+    }
+
+    static func updatedWorktreeBindingsAfterBranchSwitch(
+        _ bindings: [AgentSessionWorktreeBinding],
+        switchedCheckoutCandidatePaths: [String],
+        branch: String?,
+        head: String?
+    ) -> (bindings: [AgentSessionWorktreeBinding], didUpdate: Bool) {
+        guard !bindings.isEmpty else { return (bindings, false) }
+        let candidateIdentities = Set(switchedCheckoutCandidatePaths.compactMap(CheckoutPathIdentity.init))
+        guard !candidateIdentities.isEmpty else { return (bindings, false) }
 
         var didUpdate = false
-        session.worktreeBindings = session.worktreeBindings.map { binding in
+        let updatedBindings = bindings.map { binding in
             guard let bindingIdentity = CheckoutPathIdentity(binding.worktreeRootPath),
                   candidateIdentities.contains(bindingIdentity)
             else { return binding }
-            let updated = binding.updatingCheckout(branch: result.newBranch, head: result.newHead)
+            let updated = binding.updatingCheckout(branch: branch, head: head)
             if updated != binding {
                 didUpdate = true
             }
             return updated
         }
-        if didUpdate {
-            session.isDirty = true
-        }
-        return didUpdate
+        return (updatedBindings, didUpdate)
     }
 
     static func executionWorktreeSelection(from worktree: GitWorktreeDescriptor) -> AgentExecutionWorktreeSelection {
