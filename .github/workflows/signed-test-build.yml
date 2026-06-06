@@ -265,6 +265,7 @@ jobs:
             release-source/dist/*.zip
             release-source/dist/*.dmg
             release-source/dist/SHA256SUMS
+            release-source/dist/*-artifact-manifest.json
             release-source/dist/*-signed-test-provenance.json
           if-no-files-found: error
           retention-days: 7
@@ -304,20 +305,22 @@ jobs:
           shopt -s nullglob
           archives=(signed-test-build/*.zip)
           dmgs=(signed-test-build/*.dmg)
-          manifests=(signed-test-build/*SHA256SUMS)
+          checksum_manifests=(signed-test-build/*SHA256SUMS)
+          artifact_manifests=(signed-test-build/*-artifact-manifest.json)
           provenances=(signed-test-build/*-signed-test-provenance.json)
           [[ "${#archives[@]}" == "1" ]] || { echo "Expected exactly one signed ZIP" >&2; exit 1; }
           [[ "${#dmgs[@]}" == "1" ]] || { echo "Expected exactly one signed DMG" >&2; exit 1; }
-          [[ "${#manifests[@]}" == "1" ]] || { echo "Expected exactly one signed ZIP checksum manifest" >&2; exit 1; }
+          [[ "${#checksum_manifests[@]}" == "1" ]] || { echo "Expected exactly one signed ZIP checksum manifest" >&2; exit 1; }
+          [[ "${#artifact_manifests[@]}" == "1" ]] || { echo "Expected exactly one signed app artifact manifest" >&2; exit 1; }
           [[ "${#provenances[@]}" == "1" ]] || { echo "Expected exactly one signed test provenance file" >&2; exit 1; }
-          python3 - "${archives[0]}" "${dmgs[0]}" "${manifests[0]}" "${provenances[0]}" <<'PY'
+          python3 - "${archives[0]}" "${dmgs[0]}" "${checksum_manifests[0]}" "${artifact_manifests[0]}" "${provenances[0]}" <<'PY'
           import hashlib
           import json
           import os
           import sys
           from pathlib import Path
 
-          zip_path, dmg_path, checksums_path, provenance_path = map(Path, sys.argv[1:])
+          zip_path, dmg_path, checksums_path, manifest_path, provenance_path = map(Path, sys.argv[1:])
           provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
           required = {
               "requested_ref",
@@ -331,7 +334,7 @@ jobs:
           missing = sorted(required - provenance.keys())
           if missing:
               raise SystemExit(f"Missing provenance fields: {', '.join(missing)}")
-          if provenance.get("schema_version") != 1:
+          if provenance.get("schema_version") != 2:
               raise SystemExit("Unexpected signed test build provenance schema version")
           if provenance.get("hash_algorithm") != "SHA-256":
               raise SystemExit("Unexpected signed test build provenance hash algorithm")
@@ -359,6 +362,7 @@ jobs:
               "zip": zip_path,
               "dmg": dmg_path,
               "checksums": checksums_path,
+              "artifact_manifest": manifest_path,
           }
           artifacts = provenance["artifacts"]
           for key, path in expected.items():
@@ -373,7 +377,7 @@ jobs:
           archive="${archives[0]}"
           archive_name="$(basename "$archive")"
           archive_checksum_entry="$RUNNER_TEMP/signed-test-build-zip.sha256"
-          awk -v archive_name="$archive_name" '$2 == archive_name { print }' "${manifests[0]}" > "$archive_checksum_entry"
+          awk -v archive_name="$archive_name" '$2 == archive_name { print }' "${checksum_manifests[0]}" > "$archive_checksum_entry"
           [[ "$(wc -l < "$archive_checksum_entry" | tr -d ' ')" == "1" ]] || { echo "Expected exactly one signed ZIP checksum entry" >&2; exit 1; }
           (cd signed-test-build && shasum -a 256 -c "$archive_checksum_entry")
           mkdir extracted
@@ -381,13 +385,34 @@ jobs:
           ./trusted-control-plane/Scripts/validate_embedded_mcp_helper_layout.sh \
             "extracted/RepoPrompt CE.app" \
             "Signed test build MCP helper layout"
+          ./trusted-control-plane/Scripts/validate_app_architectures.sh \
+            "extracted/RepoPrompt CE.app" \
+            "arm64,x86_64" \
+            "Signed test build app"
+          ./trusted-control-plane/Scripts/write_app_artifact_manifest.py verify \
+            --app "extracted/RepoPrompt CE.app" \
+            --manifest "${artifact_manifests[0]}" \
+            --expected-architectures "arm64,x86_64"
+          echo "ARTIFACT_MANIFEST_PATH=${artifact_manifests[0]}" >> "$GITHUB_ENV"
 
-      - name: Execute signed helper without inherited secrets
+      - name: Execute signed helper and packaged roundtrip without inherited secrets
         run: |
           env -i \
             PATH=/usr/bin:/bin:/usr/sbin:/sbin \
             HOME="$HOME" \
             TMPDIR="$RUNNER_TEMP" \
+            USER="$USER" \
+            LOGNAME="$LOGNAME" \
             ./trusted-control-plane/Scripts/smoke_embedded_mcp_helper.sh \
             "extracted/RepoPrompt CE.app" \
             "Signed test build MCP helper"
+          env -i \
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            HOME="$HOME" \
+            TMPDIR="$RUNNER_TEMP" \
+            USER="$USER" \
+            LOGNAME="$LOGNAME" \
+            ./trusted-control-plane/Scripts/smoke_packaged_mcp_roundtrip.sh \
+            "extracted/RepoPrompt CE.app" \
+            "Signed test packaged app" \
+            "$ARTIFACT_MANIFEST_PATH"

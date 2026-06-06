@@ -20,6 +20,8 @@ DMG="$DIST_DIR/$ARCHIVE_BASENAME.dmg"
 APPCAST="$DIST_DIR/appcast.xml"
 CHECKSUMS="$DIST_DIR/SHA256SUMS"
 SIGNED_TEST_PROVENANCE="$DIST_DIR/$ARCHIVE_BASENAME-signed-test-provenance.json"
+BUILD_ARTIFACT_MANIFEST="$ROOT_DIR/.build/release/$APP_NAME-artifact-manifest.json"
+FINAL_ARTIFACT_MANIFEST="$DIST_DIR/$ARCHIVE_BASENAME-artifact-manifest.json"
 STAGE_ARCHIVE="$DIST_DIR/$ARCHIVE_BASENAME-stage.zip"
 STAGE_ARCHIVE_CHECKSUM="$STAGE_ARCHIVE.sha256"
 RELEASE_TAG="${RELEASE_TAG:-}"
@@ -76,12 +78,17 @@ run_preflight() {
     require_file "$ROOT_DIR/Vendor/Sparkle/PROVENANCE.md"
     require_file "$ROOT_DIR/Vendor/Sparkle/SHA256SUMS"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/sign_staged_release.sh"
+    require_file "$CONTROL_PLANE_SCRIPTS_DIR/build_swiftpm_release_products.sh"
+    require_file "$CONTROL_PLANE_SCRIPTS_DIR/compare_swiftpm_release_resources.py"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/smoke_embedded_mcp_helper.sh"
+    require_file "$CONTROL_PLANE_SCRIPTS_DIR/smoke_packaged_mcp_roundtrip.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/sync_mcp_cli_version.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_embedded_mcp_helper_layout.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_required_swiftpm_resource_bundles.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/patch_keyboard_shortcuts_resource_lookup.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/patches/keyboardshortcuts-2.3.0-resource-lookup.patch"
+    require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh"
+    require_file "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/extract_staged_release.py"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_staged_release.sh"
     require_file "$RUN_WITHOUT_GITHUB_TOKENS"
@@ -131,6 +138,38 @@ validate_packaged_legal() {
         "$CONTROL_PLANE_SCRIPTS_DIR/validate_packaged_legal.sh" "$1"
 }
 
+validate_public_app() {
+    local app_bundle="$1"
+    local manifest="$2"
+    local label="$3"
+    "$CONTROL_PLANE_SCRIPTS_DIR/validate_embedded_mcp_helper_layout.sh" "$app_bundle" "$label MCP helper layout"
+    "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" "$app_bundle" "arm64,x86_64" "$label architectures"
+    "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py" verify \
+        --app "$app_bundle" \
+        --manifest "$manifest" \
+        --expected-architectures "arm64,x86_64"
+}
+
+validate_distribution_zip() {
+    local archive="$1"
+    local manifest="$2"
+    local label="$3"
+    local extract_dir="$TMP_DIR/${label//[^A-Za-z0-9]/-}-extract"
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+    ditto -x -k "$archive" "$extract_dir"
+    local extracted_app="$extract_dir/$DISTRIBUTION_APP_BUNDLE_NAME"
+    [[ -d "$extracted_app" ]] || fail "$label ZIP must contain $DISTRIBUTION_APP_BUNDLE_NAME at its root"
+    validate_public_app "$extracted_app" "$manifest" "$label extracted app"
+}
+
+write_final_artifact_manifest() {
+    "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py" write \
+        --app "$APP_BUNDLE" \
+        --output "$FINAL_ARTIFACT_MANIFEST" \
+        --expected-architectures "arm64,x86_64"
+}
+
 package_release_candidate() {
     resolve_without_lockfile_drift
     run_preflight
@@ -144,12 +183,18 @@ package_release_candidate() {
         "$CONTROL_PLANE_SCRIPTS_DIR/package_app.sh" release
     run_preflight
     validate_packaged_legal "$APP_BUNDLE"
+    validate_public_app "$APP_BUNDLE" "$BUILD_ARTIFACT_MANIFEST" "Release candidate"
+    write_final_artifact_manifest
     TMP_DIR="$(mktemp -d)"
     ditto "$APP_BUNDLE" "$TMP_DIR/$DISTRIBUTION_APP_BUNDLE_NAME"
     ditto -c -k --norsrc --keepParent "$TMP_DIR/$DISTRIBUTION_APP_BUNDLE_NAME" "$UPDATE_ZIP"
+    validate_distribution_zip "$UPDATE_ZIP" "$FINAL_ARTIFACT_MANIFEST" "Release candidate archive"
     (
         cd "$DIST_DIR"
-        shasum -a 256 "$(basename "$UPDATE_ZIP")" > "$(basename "$CHECKSUMS")"
+        shasum -a 256 \
+            "$(basename "$UPDATE_ZIP")" \
+            "$(basename "$FINAL_ARTIFACT_MANIFEST")" \
+            > "$(basename "$CHECKSUMS")"
     )
 
     printf 'Created ad-hoc release-candidate artifact: %s\n' "$UPDATE_ZIP"
@@ -199,10 +244,12 @@ stage_publish_release() {
         "$CONTROL_PLANE_SCRIPTS_DIR/package_app.sh" release
     run_preflight
     validate_packaged_legal "$APP_BUNDLE"
+    validate_public_app "$APP_BUNDLE" "$BUILD_ARTIFACT_MANIFEST" "Release staging"
     TMP_DIR="$(mktemp -d)"
     local stage_root="$TMP_DIR/release-stage"
     mkdir -p "$stage_root/.build/release"
     ditto "$APP_BUNDLE" "$stage_root/.build/release/$APP_NAME.app"
+    cp "$BUILD_ARTIFACT_MANIFEST" "$stage_root/.build/release/$APP_NAME-artifact-manifest.json"
     cp "$ROOT_DIR/version.env" "$ROOT_DIR/LICENSE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage_root/"
     cp -R "$ROOT_DIR/ThirdPartyLicenses" "$stage_root/"
     printf '%s\n' "$RELEASE_COMMIT" > "$stage_root/RELEASE_COMMIT"
@@ -229,10 +276,12 @@ stage_signed_test_build() {
         "$CONTROL_PLANE_SCRIPTS_DIR/package_app.sh" release
     run_preflight
     validate_packaged_legal "$APP_BUNDLE"
+    validate_public_app "$APP_BUNDLE" "$BUILD_ARTIFACT_MANIFEST" "Signed test staging"
     TMP_DIR="$(mktemp -d)"
     local stage_root="$TMP_DIR/signed-test-build-stage"
     mkdir -p "$stage_root/.build/release"
     ditto "$APP_BUNDLE" "$stage_root/.build/release/$APP_NAME.app"
+    cp "$BUILD_ARTIFACT_MANIFEST" "$stage_root/.build/release/$APP_NAME-artifact-manifest.json"
     cp "$ROOT_DIR/version.env" "$ROOT_DIR/LICENSE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage_root/"
     cp -R "$ROOT_DIR/ThirdPartyLicenses" "$stage_root/"
     printf '%s\n' "$RELEASE_COMMIT" > "$stage_root/RELEASE_COMMIT"
@@ -269,10 +318,11 @@ sha256_file() {
 }
 
 write_signed_test_build_provenance() {
-    local zip_name dmg_name checksums_name
+    local zip_name dmg_name checksums_name manifest_name
     zip_name="$(basename "$UPDATE_ZIP")"
     dmg_name="$(basename "$DMG")"
     checksums_name="$(basename "$CHECKSUMS")"
+    manifest_name="$(basename "$FINAL_ARTIFACT_MANIFEST")"
 
     SIGNED_TEST_PROVENANCE_PATH="$SIGNED_TEST_PROVENANCE" \
     SIGNED_TEST_ZIP_NAME="$zip_name" \
@@ -281,6 +331,8 @@ write_signed_test_build_provenance() {
     SIGNED_TEST_DMG_SHA256="$(sha256_file "$DMG")" \
     SIGNED_TEST_CHECKSUMS_NAME="$checksums_name" \
     SIGNED_TEST_CHECKSUMS_SHA256="$(sha256_file "$CHECKSUMS")" \
+    SIGNED_TEST_ARTIFACT_MANIFEST_NAME="$manifest_name" \
+    SIGNED_TEST_ARTIFACT_MANIFEST_SHA256="$(sha256_file "$FINAL_ARTIFACT_MANIFEST")" \
     python3 - <<'PY'
 import json
 import os
@@ -288,7 +340,7 @@ from pathlib import Path
 
 reachable_refs = [ref for ref in os.environ["SIGNED_TEST_REACHABLE_REFS"].split(",") if ref]
 provenance = {
-    "schema_version": 1,
+    "schema_version": 2,
     "artifact": "RepoPrompt CE signed test build",
     "requested_ref": os.environ["SIGNED_TEST_SOURCE_REF"],
     "resolved_source_commit": os.environ["RELEASE_COMMIT"],
@@ -309,6 +361,10 @@ provenance = {
         "checksums": {
             "file": os.environ["SIGNED_TEST_CHECKSUMS_NAME"],
             "sha256": os.environ["SIGNED_TEST_CHECKSUMS_SHA256"],
+        },
+        "artifact_manifest": {
+            "file": os.environ["SIGNED_TEST_ARTIFACT_MANIFEST_NAME"],
+            "sha256": os.environ["SIGNED_TEST_ARTIFACT_MANIFEST_SHA256"],
         },
         "staged_source_archive": {
             "file": os.environ["SIGNED_TEST_STAGED_ARCHIVE_NAME"],
@@ -345,11 +401,14 @@ publish_staged_release() {
     submit_notarization "$notary_zip"
     xcrun stapler staple "$APP_BUNDLE"
     xcrun stapler validate "$APP_BUNDLE"
+    write_final_artifact_manifest
+    validate_public_app "$APP_BUNDLE" "$FINAL_ARTIFACT_MANIFEST" "Final Developer ID app"
 
     local distribution_dir="$TMP_DIR/distribution"
     mkdir -p "$distribution_dir"
     ditto "$APP_BUNDLE" "$distribution_dir/$DISTRIBUTION_APP_BUNDLE_NAME"
     ditto -c -k --norsrc --keepParent "$distribution_dir/$DISTRIBUTION_APP_BUNDLE_NAME" "$UPDATE_ZIP"
+    validate_distribution_zip "$UPDATE_ZIP" "$FINAL_ARTIFACT_MANIFEST" "Final distribution"
 
     hdiutil create -volname "$DISPLAY_NAME" -srcfolder "$distribution_dir" -ov -format UDZO "$DMG"
     submit_notarization "$DMG"
@@ -372,6 +431,7 @@ publish_staged_release() {
             "$(basename "$UPDATE_ZIP")" \
             "$(basename "$DMG")" \
             "$(basename "$APPCAST")" \
+            "$(basename "$FINAL_ARTIFACT_MANIFEST")" \
             > "$(basename "$CHECKSUMS")"
     )
 
@@ -382,6 +442,7 @@ publish_staged_release() {
         "$DMG"
         "$APPCAST"
         "$CHECKSUMS"
+        "$FINAL_ARTIFACT_MANIFEST"
         --verify-tag
         --title "$DISPLAY_NAME $MARKETING_VERSION"
         --generate-notes
@@ -414,11 +475,14 @@ publish_signed_test_build() {
     submit_notarization "$notary_zip"
     xcrun stapler staple "$APP_BUNDLE"
     xcrun stapler validate "$APP_BUNDLE"
+    write_final_artifact_manifest
+    validate_public_app "$APP_BUNDLE" "$FINAL_ARTIFACT_MANIFEST" "Final Developer ID app"
 
     local distribution_dir="$TMP_DIR/distribution"
     mkdir -p "$distribution_dir"
     ditto "$APP_BUNDLE" "$distribution_dir/$DISTRIBUTION_APP_BUNDLE_NAME"
     ditto -c -k --norsrc --keepParent "$distribution_dir/$DISTRIBUTION_APP_BUNDLE_NAME" "$UPDATE_ZIP"
+    validate_distribution_zip "$UPDATE_ZIP" "$FINAL_ARTIFACT_MANIFEST" "Final distribution"
 
     hdiutil create -volname "$DISPLAY_NAME" -srcfolder "$distribution_dir" -ov -format UDZO "$DMG"
     submit_notarization "$DMG"
@@ -430,12 +494,14 @@ publish_signed_test_build() {
         shasum -a 256 \
             "$(basename "$UPDATE_ZIP")" \
             "$(basename "$DMG")" \
+            "$(basename "$FINAL_ARTIFACT_MANIFEST")" \
             > "$(basename "$CHECKSUMS")"
     )
     write_signed_test_build_provenance
 
     printf 'Created signed test build ZIP: %s\n' "$UPDATE_ZIP"
     printf 'Created signed test build DMG: %s\n' "$DMG"
+    printf 'Created signed test build artifact manifest: %s\n' "$FINAL_ARTIFACT_MANIFEST"
     printf 'Created signed test build provenance: %s\n' "$SIGNED_TEST_PROVENANCE"
     printf 'This artifact is signed and notarized for testing only. It is not a GitHub Release or stable update.\n'
 }
