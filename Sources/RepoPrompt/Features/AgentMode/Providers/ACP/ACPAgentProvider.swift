@@ -134,6 +134,7 @@ struct ACPLaunchConfiguration: Equatable {
     let additionalPathHints: [String]
     let enableDebugLogging: Bool
     let cleanupArtifact: ACPLaunchCleanupArtifact?
+    let expectedExecutableIdentity: ExecutableFileIdentity?
 
     init(
         providerID: ACPProviderID,
@@ -143,7 +144,8 @@ struct ACPLaunchConfiguration: Equatable {
         workingDirectory: String?,
         additionalPathHints: [String],
         enableDebugLogging: Bool,
-        cleanupArtifact: ACPLaunchCleanupArtifact? = nil
+        cleanupArtifact: ACPLaunchCleanupArtifact? = nil,
+        expectedExecutableIdentity: ExecutableFileIdentity? = nil
     ) {
         self.providerID = providerID
         self.command = command
@@ -153,6 +155,7 @@ struct ACPLaunchConfiguration: Equatable {
         self.additionalPathHints = additionalPathHints
         self.enableDebugLogging = enableDebugLogging
         self.cleanupArtifact = cleanupArtifact
+        self.expectedExecutableIdentity = expectedExecutableIdentity
     }
 }
 

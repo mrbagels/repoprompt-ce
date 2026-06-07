@@ -166,6 +166,19 @@ final class ACPIntegratedAgentModeRunner {
             )
             return
         }
+        let support = await provider.support(for: freshRunRequest)
+        guard isStartupStillCurrent(session: session, runID: runID, runAttemptID: runAttemptID) else { return }
+        guard support == .supported else {
+            await failBeforeProviderSend(
+                tabID: tabID,
+                session: session,
+                runID: runID,
+                runAttemptID: runAttemptID,
+                attachmentReservationID: attachmentReservationID,
+                errorText: support.reason ?? "\(runRequest.agentKind.displayName) ACP is not available."
+            )
+            return
+        }
         let controller: ACPAgentSessionController
         do {
             controller = try controllerFactory(provider, freshRunRequest)
@@ -414,9 +427,9 @@ final class ACPIntegratedAgentModeRunner {
             hooks.scheduleSave(session.tabID)
             hooks.updateBindings(session)
 
-            try await applyRequestedSessionModeIfNeeded(runRequest.sessionModeID, controller: controller, runID: runID)
-            await controller.setAutoApproveAllToolPermissions(runRequest.autoApproveAllToolPermissions)
             try await applyExplicitSelectedModelIfNeeded(runRequest, controller: controller, runID: runID)
+            await controller.setAutoApproveAllToolPermissions(runRequest.autoApproveAllToolPermissions)
+            try await applyRequestedSessionModeIfNeeded(runRequest.sessionModeID, controller: controller, runID: runID)
             setRunningStatus(waitingForConnectionStatusText(for: runRequest.agentKind), source: .transport, session: session, urgent: true)
 
             let routed = await lease.releaseWhenRouted()
@@ -505,9 +518,9 @@ final class ACPIntegratedAgentModeRunner {
                 return
             }
 
-            try await applyRequestedSessionModeIfNeeded(runRequest.sessionModeID, controller: controller, runID: runID)
-            await controller.setAutoApproveAllToolPermissions(runRequest.autoApproveAllToolPermissions)
             try await applyExplicitSelectedModelIfNeeded(runRequest, controller: controller, runID: runID)
+            await controller.setAutoApproveAllToolPermissions(runRequest.autoApproveAllToolPermissions)
+            try await applyRequestedSessionModeIfNeeded(runRequest.sessionModeID, controller: controller, runID: runID)
 
             await runPromptTurn(
                 session: session,

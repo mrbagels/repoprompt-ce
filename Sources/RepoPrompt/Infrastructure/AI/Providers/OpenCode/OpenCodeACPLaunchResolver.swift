@@ -1,67 +1,45 @@
 import Foundation
 
-enum CursorACPLaunchCandidate: Equatable {
-    case cursorAgentACP
-
-    var command: String {
-        CLILaunchProfiles.cursor.commandName
-    }
-
-    var launchArguments: [String] {
-        ["--approve-mcps", "acp"]
-    }
-
-    var helpArguments: [String] {
-        ["acp", "--help"]
-    }
-}
-
-struct CursorACPResolvedLaunch: Equatable {
+struct OpenCodeACPResolvedLaunch: Equatable {
     let command: String
     let arguments: [String]
     let additionalPathHints: [String]
     let executableIdentity: ExecutableFileIdentity
 }
 
-enum CursorACPLaunchResolutionError: Error, Equatable, LocalizedError {
+enum OpenCodeACPLaunchResolutionError: Error, Equatable, LocalizedError {
     case missingConfiguredCommand
-    case unsafeConfiguredCommand(String)
     case exactPathNotFound(String)
     case environmentDiscoveryRequired(String)
-    case unsafeApplicationPath(String)
-    case unsafeCanonicalBasename(String)
 
     var errorDescription: String? {
         switch self {
         case .missingConfiguredCommand:
-            "Cursor Agent CLI launch requires an exact `cursor-agent` command or absolute path."
-        case let .unsafeConfiguredCommand(command):
-            "Refusing unsafe Cursor ACP command `\(command)`. Configure the CLI-only `cursor-agent` executable."
+            "OpenCode ACP launch requires an `opencode` command or executable path."
         case let .exactPathNotFound(command):
-            "Cursor Agent CLI was not found as a valid executable regular file for `\(command)`. Install `cursor-agent` or configure its absolute path."
+            "OpenCode CLI was not found as a valid executable regular file for `\(command)`. Install OpenCode or configure its absolute path."
         case let .environmentDiscoveryRequired(command):
-            "Cursor Agent CLI path discovery has not completed for `\(command)`. Run the Cursor ACP support preflight or configure an absolute `cursor-agent` path."
-        case let .unsafeApplicationPath(path):
-            "Refusing Cursor ACP executable inside an application bundle: \(path)"
-        case let .unsafeCanonicalBasename(path):
-            "Refusing Cursor ACP executable whose canonical basename is `cursor`: \(path)"
+            "OpenCode CLI path discovery has not completed for `\(command)`. Run the OpenCode ACP support preflight or configure an absolute executable path."
         }
     }
 }
 
-final class CursorACPLaunchResolver: @unchecked Sendable {
+final class OpenCodeACPLaunchResolver: @unchecked Sendable {
     typealias EnvironmentProvider = @Sendable (_ enableDebugLogging: Bool) async -> [String: String]
+
+    private static let launchArguments = ["acp"]
+    private static let helpArguments = ["acp", "--help"]
 
     private let environmentProvider: EnvironmentProvider
     private let probeMutex = AsyncMutex()
     private let lock = NSLock()
-    private var cachedLaunchByKey: [String: CursorACPResolvedLaunch] = [:]
+    private var cachedLaunchByKey: [String: OpenCodeACPResolvedLaunch] = [:]
 
     init(
         environmentProvider: @escaping EnvironmentProvider = { enableDebugLogging in
             let result = await ProcessEnvironmentBuilder.build(
                 ProcessEnvironmentRequest(
-                    purpose: .acpAgent(providerID: ACPProviderID.cursor.rawValue),
+                    purpose: .acpAgent(providerID: ACPProviderID.openCode.rawValue),
                     enableDebugLogging: enableDebugLogging
                 )
             )
@@ -71,7 +49,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         self.environmentProvider = environmentProvider
     }
 
-    func resolvedLaunch(for config: CursorAgentConfig) throws -> CursorACPResolvedLaunch {
+    func resolvedLaunch(for config: OpenCodeAgentConfig) throws -> OpenCodeACPResolvedLaunch {
         let key = cacheKey(for: config)
         if let cached = cachedLaunch(forKey: key) {
             do {
@@ -88,7 +66,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         return launch
     }
 
-    func probeSupport(for config: CursorAgentConfig) async -> ACPSupportResult {
+    func probeSupport(for config: OpenCodeAgentConfig) async -> ACPSupportResult {
         do {
             return try await probeMutex.withLock { [self] in
                 await probeSupportSerially(for: config)
@@ -98,7 +76,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         }
     }
 
-    private func probeSupportSerially(for config: CursorAgentConfig) async -> ACPSupportResult {
+    private func probeSupportSerially(for config: OpenCodeAgentConfig) async -> ACPSupportResult {
         let key = cacheKey(for: config)
         invalidate(key: key)
         do {
@@ -111,26 +89,21 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                 enableDebugLogging: config.enableDebugLogging
             )
             let result = try await CLIProcessRunner(config: processConfig).run(
-                args: CursorACPLaunchCandidate.cursorAgentACP.helpArguments,
+                args: Self.helpArguments,
                 stdin: nil,
                 outputMode: .none,
                 timeout: 10
             )
             guard result.status == 0 else {
                 return .unsupported(
-                    reason: "Cursor Agent CLI ACP preflight failed: `cursor-agent acp --help` exited with status \(result.status)."
+                    reason: "OpenCode ACP preflight failed: `opencode acp --help` exited with status \(result.status)."
                 )
             }
 
             let stdout = String(data: result.stdout, encoding: .utf8) ?? ""
             let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
-            let combined = "\(stdout)\n\(stderr)"
-            guard combined.localizedCaseInsensitiveContains("acp")
-                || combined.localizedCaseInsensitiveContains("agent client protocol")
-            else {
-                return .unsupported(
-                    reason: "Cursor Agent CLI ACP preflight failed: `cursor-agent acp --help` did not advertise ACP support."
-                )
+            guard "\(stdout)\n\(stderr)".localizedCaseInsensitiveContains("acp") else {
+                return .unsupported(reason: "Installed OpenCode CLI does not advertise ACP support.")
             }
 
             try launch.executableIdentity.validate(atPath: launch.command)
@@ -142,7 +115,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         }
     }
 
-    private func resolveLaunchForProbe(for config: CursorAgentConfig) async throws -> CursorACPResolvedLaunch {
+    private func resolveLaunchForProbe(for config: OpenCodeAgentConfig) async throws -> OpenCodeACPResolvedLaunch {
         let configuredCommand = try validatedConfiguredCommand(config)
         let environment = await environmentProvider(config.enableDebugLogging)
         if configuredCommand.contains("/") {
@@ -151,10 +124,10 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
 
         let effectiveHints = CLIPathHints.nativeDefaultsSupplemented(with: config.additionalPathHints)
         let resolved = CommandPathResolver.resolve(
-            CursorACPLaunchCandidate.cursorAgentACP.command,
+            configuredCommand,
             environment: environment,
             additionalPaths: effectiveHints,
-            preferredBasenames: CLILaunchProfiles.cursor.preferredBasenames
+            preferredBasenames: [configuredCommand]
         )
         return try validatedLaunch(
             entryPath: resolved,
@@ -164,79 +137,60 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
     }
 
     private func resolveExplicitLaunch(
-        for config: CursorAgentConfig,
+        for config: OpenCodeAgentConfig,
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) throws -> CursorACPResolvedLaunch {
+    ) throws -> OpenCodeACPResolvedLaunch {
         let configuredCommand = try validatedConfiguredCommand(config)
         guard configuredCommand.contains("/") else {
-            throw CursorACPLaunchResolutionError.environmentDiscoveryRequired(configuredCommand)
+            throw OpenCodeACPLaunchResolutionError.environmentDiscoveryRequired(configuredCommand)
         }
         let effectiveHints = CLIPathHints.nativeDefaultsSupplemented(with: config.additionalPathHints)
-        let expanded = CommandPathResolver.expandPath(configuredCommand, environment: environment)
         return try validatedLaunch(
-            entryPath: expanded,
+            entryPath: CommandPathResolver.expandPath(configuredCommand, environment: environment),
             configuredCommand: configuredCommand,
             additionalPathHints: effectiveHints
         )
     }
 
-    private func validatedConfiguredCommand(_ config: CursorAgentConfig) throws -> String {
-        let configuredCommand = config.commandName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !configuredCommand.isEmpty else {
-            throw CursorACPLaunchResolutionError.missingConfiguredCommand
+    private func validatedConfiguredCommand(_ config: OpenCodeAgentConfig) throws -> String {
+        let command = config.commandName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else {
+            throw OpenCodeACPLaunchResolutionError.missingConfiguredCommand
         }
-        let expectedCommand = CursorACPLaunchCandidate.cursorAgentACP.command
-        if configuredCommand.contains("/") {
-            guard URL(fileURLWithPath: configuredCommand).lastPathComponent.caseInsensitiveCompare(expectedCommand) == .orderedSame else {
-                throw CursorACPLaunchResolutionError.unsafeConfiguredCommand(configuredCommand)
-            }
-        } else if configuredCommand.caseInsensitiveCompare(expectedCommand) != .orderedSame {
-            throw CursorACPLaunchResolutionError.unsafeConfiguredCommand(configuredCommand)
-        }
-        return configuredCommand
+        return command
     }
 
     private func validatedLaunch(
         entryPath: String,
         configuredCommand: String,
         additionalPathHints: [String]
-    ) throws -> CursorACPResolvedLaunch {
-        guard entryPath.hasPrefix("/"),
-              URL(fileURLWithPath: entryPath).lastPathComponent.caseInsensitiveCompare(CursorACPLaunchCandidate.cursorAgentACP.command) == .orderedSame
-        else {
-            throw CursorACPLaunchResolutionError.exactPathNotFound(configuredCommand)
+    ) throws -> OpenCodeACPResolvedLaunch {
+        guard entryPath.hasPrefix("/") else {
+            throw OpenCodeACPLaunchResolutionError.exactPathNotFound(configuredCommand)
         }
 
         let identity: ExecutableFileIdentity
         do {
             identity = try ExecutableFileIdentity.capture(atPath: entryPath)
         } catch {
-            throw CursorACPLaunchResolutionError.exactPathNotFound(configuredCommand)
+            throw OpenCodeACPLaunchResolutionError.exactPathNotFound(configuredCommand)
         }
 
-        let canonicalURL = URL(fileURLWithPath: identity.canonicalPath)
-        if canonicalURL.pathComponents.contains(where: { $0.lowercased().hasSuffix(".app") }) {
-            throw CursorACPLaunchResolutionError.unsafeApplicationPath(identity.canonicalPath)
-        }
-        if canonicalURL.lastPathComponent.caseInsensitiveCompare("cursor") == .orderedSame {
-            throw CursorACPLaunchResolutionError.unsafeCanonicalBasename(identity.canonicalPath)
-        }
-
-        return CursorACPResolvedLaunch(
+        return OpenCodeACPResolvedLaunch(
             command: identity.canonicalPath,
-            arguments: CursorACPLaunchCandidate.cursorAgentACP.launchArguments,
+            arguments: Self.launchArguments,
             additionalPathHints: additionalPathHints,
             executableIdentity: identity
         )
     }
 
-    private func cachedLaunch(forKey key: String) -> CursorACPResolvedLaunch? {
+    private func cachedLaunch(forKey key: String) -> OpenCodeACPResolvedLaunch? {
         lock.lock()
         defer { lock.unlock() }
         return cachedLaunchByKey[key]
     }
 
-    private func cache(_ launch: CursorACPResolvedLaunch, key: String) {
+    private func cache(_ launch: OpenCodeACPResolvedLaunch, key: String) {
         lock.lock()
         cachedLaunchByKey[key] = launch
         lock.unlock()
@@ -248,7 +202,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func cacheKey(for config: CursorAgentConfig) -> String {
+    private func cacheKey(for config: OpenCodeAgentConfig) -> String {
         ([config.commandName] + config.additionalPathHints).joined(separator: "\u{1F}")
     }
 }

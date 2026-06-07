@@ -105,6 +105,18 @@ actor MCPBootstrapLease {
         // Register routing state before gate acquisition
         acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) registering routing waiter")
         await MCPRoutingWaiter.register(runID: spec.runID)
+        #if DEBUG
+            await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                runID: spec.runID,
+                event: "routing_waiter_registered",
+                fields: [
+                    "client_name": spec.clientName ?? "nil",
+                    "window_id": String(spec.windowID),
+                    "tab_id": spec.tabID?.uuidString ?? "nil",
+                    "gate_id": spec.gateID.uuidString
+                ]
+            )
+        #endif
         acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) routing waiter registered")
 
         return await withTaskCancellationHandler {
@@ -128,6 +140,18 @@ actor MCPBootstrapLease {
                     windowID: spec.windowID
                 )
             }
+            #if DEBUG
+                await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                    runID: spec.runID,
+                    event: "lease_policy_ready",
+                    fields: [
+                        "client_name": spec.clientName ?? "nil",
+                        "requires_expected_pid": String(spec.requiresExpectedAgentPID),
+                        "window_id": String(spec.windowID),
+                        "tab_id": spec.tabID?.uuidString ?? "nil"
+                    ]
+                )
+            #endif
             acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) connection policy installed")
             if Task.isCancelled {
                 acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) task cancelled after policy install")
@@ -157,12 +181,34 @@ actor MCPBootstrapLease {
         hasReleased = true
 
         acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) releaseWhenRouted() waiting for routing client=\(spec.clientName ?? "<none>") timeoutMs=\(timeoutMs)")
+        #if DEBUG
+            await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                runID: spec.runID,
+                event: "route_wait_started",
+                fields: [
+                    "client_name": spec.clientName ?? "nil",
+                    "timeout_ms": String(timeoutMs),
+                    "gate_id": spec.gateID.uuidString
+                ]
+            )
+        #endif
         let routed = await AgentRunCoordinator.shared.releaseGateWhenRouted(
             runID: spec.runID,
             gateID: spec.gateID,
             timeoutMs: timeoutMs
         )
         acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) releaseWhenRouted() completed routed=\(routed)")
+        #if DEBUG
+            await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                runID: spec.runID,
+                event: "route_wait_completed",
+                fields: [
+                    "client_name": spec.clientName ?? "nil",
+                    "routed": String(routed),
+                    "gate_id": spec.gateID.uuidString
+                ]
+            )
+        #endif
 
         if !routed {
             acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) routing wait failed or timed out; clearing connection policy")
@@ -194,7 +240,7 @@ actor MCPBootstrapLease {
             return
         }
         acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) failAndRelease() signaling routing failure")
-        MCPRoutingWaiter.signalFailed(spec.runID)
+        await MCPRoutingWaiter.notifyFailed(runID: spec.runID)
         _ = await releaseWhenRouted()
     }
 
@@ -207,7 +253,7 @@ actor MCPBootstrapLease {
         hasReleased = true
 
         acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) failAndCleanup() signaling failure and clearing policy")
-        MCPRoutingWaiter.signalFailed(spec.runID)
+        await MCPRoutingWaiter.notifyFailed(runID: spec.runID)
         _ = await HeadlessAgentConnectionGate.completeIfActive(spec.gateID)
 
         await MCPRoutingWaiter.cleanup(runID: spec.runID)
@@ -222,10 +268,30 @@ actor MCPBootstrapLease {
         }
         hasReleased = true
         acpLeaseLog("[ACP-Runner] lease run=\(spec.runID) gate=\(spec.gateID) cancelAndCleanup() signaling failure and releasing gate")
-        MCPRoutingWaiter.signalFailed(spec.runID)
+        #if DEBUG
+            await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                runID: spec.runID,
+                event: "lease_cancelled",
+                fields: [
+                    "client_name": spec.clientName ?? "nil",
+                    "gate_id": spec.gateID.uuidString
+                ]
+            )
+        #endif
+        await MCPRoutingWaiter.notifyFailed(runID: spec.runID)
         _ = await HeadlessAgentConnectionGate.completeIfActive(spec.gateID)
         await AgentRunCoordinator.shared.cleanupRouting(runID: spec.runID)
         await policyClearer(spec)
+        #if DEBUG
+            await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                runID: spec.runID,
+                event: "lease_cleanup_completed",
+                fields: [
+                    "client_name": spec.clientName ?? "nil",
+                    "reason": "cancelled"
+                ]
+            )
+        #endif
     }
 
     // MARK: - Default Policy Hooks

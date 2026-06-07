@@ -86,28 +86,43 @@ actor MCPRoutingWaiter {
 
     /// Called when a runID is successfully bound to a connection/window.
     /// Resumes all waiters with `true`.
-    func notifyRouted(runID: UUID) {
-        resolve(runID: runID, routed: true)
+    func notifyRouted(runID: UUID) async {
+        guard resolve(runID: runID, routed: true) else { return }
+        #if DEBUG
+            await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                runID: runID,
+                event: "routing_waiter_signalled",
+                fields: ["outcome": "routed"]
+            )
+        #endif
     }
 
     /// Called when routing is known to be impossible (cleanup, cancellation, etc).
     /// Resumes all waiters with `false`.
-    func notifyFailed(runID: UUID) {
-        resolve(runID: runID, routed: false)
+    func notifyFailed(runID: UUID) async {
+        guard resolve(runID: runID, routed: false) else { return }
+        #if DEBUG
+            await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                runID: runID,
+                event: "routing_waiter_signalled",
+                fields: ["outcome": "failed"]
+            )
+        #endif
     }
 
     // MARK: - Internal
 
-    private func resolve(runID: UUID, routed: Bool) {
+    @discardableResult
+    private func resolve(runID: UUID, routed: Bool) -> Bool {
         guard var state = waitersByRunID[runID] else {
             log.warning("resolve: unregistered runID \(runID.uuidString) routed=\(routed) - ignoring")
-            return
+            return false
         }
 
         // Already resolved - ignore duplicate
         if state.isTerminal {
             log.debug("resolve (already terminal): runID=\(runID.uuidString)")
-            return
+            return false
         }
 
         // Mark as terminal
@@ -133,6 +148,7 @@ actor MCPRoutingWaiter {
         for waiter in continuations {
             waiter.cont.resume(returning: routed)
         }
+        return true
     }
 
     /// Schedules automatic cleanup of terminal state after TTL expires
@@ -180,12 +196,20 @@ actor MCPRoutingWaiter {
     /// Note: With TTL eviction, explicit cleanup is optional but recommended
     /// to free memory sooner when the run is known to be complete.
     func cleanup(runID: UUID) {
-        if let state = waitersByRunID.removeValue(forKey: runID) {
-            state.timeoutTask?.cancel()
-            state.expiryTask?.cancel()
-            log.debug("cleanup: runID=\(runID.uuidString)")
+        guard let state = waitersByRunID.removeValue(forKey: runID) else { return }
+        state.timeoutTask?.cancel()
+        state.expiryTask?.cancel()
+        for waiter in state.continuations {
+            waiter.cont.resume(returning: false)
         }
+        log.debug("cleanup: runID=\(runID.uuidString) resumedCount=\(state.continuations.count)")
     }
+
+    #if DEBUG
+        func debugContinuationCount(runID: UUID) -> Int {
+            waitersByRunID[runID]?.continuations.count ?? 0
+        }
+    #endif
 }
 
 // MARK: - Static Async Methods (for async callers)
@@ -218,6 +242,12 @@ extension MCPRoutingWaiter {
     static func cleanup(runID: UUID) async {
         await shared.cleanup(runID: runID)
     }
+
+    #if DEBUG
+        static func debugContinuationCount(runID: UUID) async -> Int {
+            await shared.debugContinuationCount(runID: runID)
+        }
+    #endif
 }
 
 // MARK: - Fire-and-Forget Signal Methods (for sync callers)

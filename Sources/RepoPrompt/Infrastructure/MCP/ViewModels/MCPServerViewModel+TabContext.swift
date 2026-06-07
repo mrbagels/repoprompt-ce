@@ -1922,8 +1922,6 @@ extension MCPServerViewModel {
             return true
         }
 
-        windowIDByConnection[connectionID] = windowID
-
         // If this connection is already bound to a different run, refuse remap
         if let bound = tabContextByConnectionID[connectionID],
            let boundRun = bound.runID,
@@ -1958,6 +1956,7 @@ extension MCPServerViewModel {
             // Avoid dangling reverse mapping for stale run
             connectionIDByRunID.removeValue(forKey: previous)
         }
+        windowIDByConnection[connectionID] = windowID
         connectionIDByRunID[runID] = connectionID
         connectionIDToRunID[connectionID] = runID
         tabContextLog("registerRunIDMapping connectionID=\(connectionID) runID=\(runID) windowID=\(windowID)")
