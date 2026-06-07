@@ -146,9 +146,9 @@ struct MentionSuggestionListView: View {
                         .id(index)
                     }
                 }
-                .padding(.vertical, 4)
                 .padding(.horizontal, 4)
             }
+            .contentMargins(.vertical, 4, for: .scrollContent)
             .onChange(of: model.highlightedIndex) { _, newValue in
                 proxy.scrollTo(newValue)
             }
