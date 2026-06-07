@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import plistlib
@@ -526,6 +527,113 @@ esac
         )
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("does not match app bundle", rejected.stderr)
+
+    def test_artifact_manifest_records_certificate_from_equals_form_extraction(self) -> None:
+        app, fake_lipo = self.make_universal_architecture_fixture()
+        info = {
+            "CFBundleExecutable": "RepoPrompt",
+            "CFBundleIdentifier": "com.pvncher.repoprompt.ce",
+            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleVersion": "1",
+            "RepoPromptSigningMode": "developer-id",
+        }
+        (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
+        certificate = b"fixture leaf certificate\n"
+        fake_codesign = app.parent / "codesign"
+        fake_codesign.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+certificate_prefix=""
+for argument in "$@"; do
+  case "$argument" in
+    --extract-certificates=*) certificate_prefix="${argument#*=}" ;;
+    --extract-certificates)
+      printf 'certificate prefix must use the equals form\n' >&2
+      exit 64
+      ;;
+  esac
+done
+if [[ -n "$certificate_prefix" ]]; then
+  printf 'fixture leaf certificate\n' > "${certificate_prefix}0"
+  exit 0
+fi
+case "$*" in
+  *--entitlements*)
+    printf '<?xml version="1.0"?><plist version="1.0"><dict/></plist>\n'
+    ;;
+  *-r-*)
+    printf 'designated => identifier "fixture"\n' >&2
+    ;;
+  *)
+    printf 'Identifier=fixture\nTeamIdentifier=TEAMID\nAuthority=Developer ID Application: Fixture\n' >&2
+    ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        fake_codesign.chmod(0o755)
+        manifest = app.parent / "certificate-manifest.json"
+        env = os.environ.copy()
+        env.update({"LIPO": str(fake_lipo), "CODESIGN": str(fake_codesign)})
+
+        result = subprocess.run(
+            [
+                str(SCRIPT_DIR / "write_app_artifact_manifest.py"),
+                "write",
+                "--app",
+                str(app),
+                "--output",
+                str(manifest),
+                "--expected-architectures",
+                "arm64,x86_64",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = json.loads(manifest.read_text(encoding="utf-8"))
+        expected_fingerprint = hashlib.sha256(certificate).hexdigest()
+        self.assertEqual(content["bundle_signing"]["leaf_certificate_sha256"], expected_fingerprint)
+        for executable in content["executables"]:
+            self.assertEqual(executable["signing"]["leaf_certificate_sha256"], expected_fingerprint)
+
+    def test_packaging_path_identity_skips_nested_compatibility_link(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        architecture_release = temp_dir / ".build" / "arm64-apple-macosx" / "release"
+        architecture_release.mkdir(parents=True)
+        compatibility_release = temp_dir / ".build" / "release"
+        compatibility_release.symlink_to(Path("arm64-apple-macosx") / "release")
+        app_bundle = architecture_release / "RepoPrompt.app"
+        app_bundle.mkdir()
+        compatibility_app_bundle = compatibility_release / "RepoPrompt.app"
+
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        function_body = package_script.split("paths_same(){", 1)[1].split("\n}\nfinish(){", 1)[0]
+        probe = temp_dir / "path-identity-probe.sh"
+        probe.write_text(
+            f"""#!/usr/bin/env bash
+set -euo pipefail
+paths_same(){{{function_body}
+}}
+if [[ "$(paths_same "$1" "$2")" != "1" ]]; then
+  ln -sfn "$1" "$2"
+fi
+""",
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+
+        result = subprocess.run(
+            [str(probe), str(app_bundle), str(compatibility_app_bundle)],
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((app_bundle / "RepoPrompt.app").exists())
 
     def test_packaged_roundtrip_source_uses_exact_pid_and_isolated_cleanup_without_global_kill(self) -> None:
         source = (SCRIPT_DIR / "smoke_packaged_mcp_roundtrip.sh").read_text(encoding="utf-8")
