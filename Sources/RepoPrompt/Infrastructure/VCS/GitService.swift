@@ -2303,31 +2303,11 @@ actor GitService {
             _ = fcntl(fd, F_SETNOSIGPIPE, 1)
         }
 
-        // Build async streams for stdout/stderr and single consumer tasks to collect data
-        final class SendableContinuation: @unchecked Sendable {
-            private let _cont: AsyncStream<Data>.Continuation
-            init(_ c: AsyncStream<Data>.Continuation) {
-                _cont = c
-            }
-
-            func yield(_ d: Data) {
-                _cont.yield(d)
-            }
-
-            func finish() {
-                _cont.finish()
-            }
-        }
-        var outBox: SendableContinuation!
-        let outStream = AsyncStream<Data>(bufferingPolicy: .unbounded) { cont in outBox = SendableContinuation(cont) }
-        var errBox: SendableContinuation!
-        let errStream = AsyncStream<Data>(bufferingPolicy: .unbounded) { cont in errBox = SendableContinuation(cont) }
-
-        // Freeze references to sendable boxes for cross-thread use
-        // (avoid capturing vars in concurrently-executing closures)
-        // Note: set handlers only after boxes are initialized
-        let outC = outBox!
-        let errC = errBox!
+        // Build async streams for stdout/stderr and single consumer tasks to collect data.
+        // GitProcessPipeDrain serializes readability callbacks with termination/cancellation
+        // so a final chunk cannot be read by a callback and then dropped after stream closure.
+        let (outStream, outDrain) = GitProcessPipeDrain.makeStream()
+        let (errStream, errDrain) = GitProcessPipeDrain.makeStream()
 
         let outCollector = Task(priority: .userInitiated) { () -> Data in
             var buf = Data()
@@ -2348,13 +2328,11 @@ actor GitService {
             try await withCheckedThrowingContinuation { continuation in
                 // Drain stdout
                 outPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let chunk = handle.availableData
-                    if !chunk.isEmpty { outC.yield(chunk) }
+                    outDrain.consumeAvailableData(from: handle)
                 }
                 // Drain stderr
                 errPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let chunk = handle.availableData
-                    if !chunk.isEmpty { errC.yield(chunk) }
+                    errDrain.consumeAvailableData(from: handle)
                 }
 
                 process.terminationHandler = { proc in
@@ -2362,17 +2340,10 @@ actor GitService {
                     outPipe.fileHandleForReading.readabilityHandler = nil
                     errPipe.fileHandleForReading.readabilityHandler = nil
 
-                    // Read any remaining bytes that arrived between the last readability
-                    // callback and process termination. Without this, stdout/stderr can be
-                    // truncated for larger outputs and parsing (e.g. --numstat) becomes empty.
-                    let outTail = outPipe.fileHandleForReading.readDataToEndOfFile()
-                    let errTail = errPipe.fileHandleForReading.readDataToEndOfFile()
-
-                    // Send any remaining bytes, then finish streams and await collectors
-                    if !outTail.isEmpty { outC.yield(outTail) }
-                    if !errTail.isEmpty { errC.yield(errTail) }
-                    outC.finish()
-                    errC.finish()
+                    // Drain bytes that arrived between the last readability callback and
+                    // process termination, then close each stream after any in-flight callback.
+                    outDrain.finishReading(from: outPipe.fileHandleForReading)
+                    errDrain.finishReading(from: errPipe.fileHandleForReading)
 
                     Task {
                         let stdoutData = await outCollector.value
@@ -2410,22 +2381,24 @@ actor GitService {
                         }
                     }
                 } catch {
-                    // Ensure handlers are removed on failure
+                    // Ensure handlers and collectors are released when launch fails.
                     outPipe.fileHandleForReading.readabilityHandler = nil
                     errPipe.fileHandleForReading.readabilityHandler = nil
+                    outDrain.cancel()
+                    errDrain.cancel()
                     continuation.resume(throwing: error)
                 }
             }
         }, onCancel: {
-            // Stop reading, finish streams, and terminate the git process to avoid pent-up data
+            // Stop callbacks and terminate before waiting on a drain lock. A callback may be
+            // blocked in FileHandle.availableData until the child closes its pipe.
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
-            outC.finish()
-            errC.finish()
-            // Only terminate if the process actually started to avoid NSInvalidArgumentException
             if process.isRunning {
                 process.terminate()
             }
+            outDrain.cancel()
+            errDrain.cancel()
         })
     }
 
@@ -2816,6 +2789,74 @@ actor GitService {
             }
         }
         return map
+    }
+}
+
+/// Serializes pipe readability callbacks with process termination and cancellation.
+///
+/// `FileHandle.readabilityHandler` may already be executing when a process termination
+/// handler clears it. Without this lock, that callback can read the final bytes, lose the
+/// race to stream closure, and have its subsequent yield discarded.
+final class GitProcessPipeDrain: @unchecked Sendable {
+    private let lock = NSLock()
+    private let continuation: AsyncStream<Data>.Continuation
+    private var isFinished = false
+
+    private init(continuation: AsyncStream<Data>.Continuation) {
+        self.continuation = continuation
+    }
+
+    static func makeStream() -> (stream: AsyncStream<Data>, drain: GitProcessPipeDrain) {
+        var drain: GitProcessPipeDrain?
+        let stream = AsyncStream<Data>(bufferingPolicy: .unbounded) { continuation in
+            drain = GitProcessPipeDrain(continuation: continuation)
+        }
+        return (stream, drain!)
+    }
+
+    func consumeAvailableData(from handle: FileHandle) {
+        consume { handle.availableData }
+    }
+
+    func finishReading(from handle: FileHandle) {
+        finish { handle.readDataToEndOfFile() }
+    }
+
+    func consume(read: () -> Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isFinished else { return }
+
+        let data = read()
+        if !data.isEmpty {
+            continuation.yield(data)
+        }
+    }
+
+    func finish(
+        readRemaining: () -> Data,
+        onWillLock: (() -> Void)? = nil
+    ) {
+        onWillLock?()
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isFinished else { return }
+
+        let data = readRemaining()
+        if !data.isEmpty {
+            continuation.yield(data)
+        }
+        isFinished = true
+        continuation.finish()
+    }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isFinished else { return }
+
+        isFinished = true
+        continuation.finish()
     }
 }
 
