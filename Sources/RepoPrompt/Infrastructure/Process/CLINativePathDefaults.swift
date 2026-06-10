@@ -38,8 +38,7 @@ enum CLINativePathDefaults {
         "~/bin",
         "~/go/bin",
         "~/.cargo/bin",
-        "~/.bun/bin",
-        "~/.opencode/bin"
+        "~/.bun/bin"
     ]
 
     static let defaultAdditionalPaths: [String] = orderedUnique(
