@@ -1099,19 +1099,83 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let root = try makeTemporaryRoot(name: "DetachedPublicationRestartBarrier")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
-            try await store.startWatchingRoot(id: record.id)
-            await store.stopWatchingRoot(id: record.id)
+            let rootID = record.id
+            let loadedService = await store.fileSystemServiceForTesting(rootID: rootID)
+            let service = try XCTUnwrap(loadedService)
+            addTeardownBlock {
+                await store.setScopedIngressBarrierWillFlushHandler(nil)
+                await store.stopWatchingRoot(id: rootID)
+            }
 
-            try await store.publishSyntheticFileSystemDeltasForTesting(rootID: record.id, deltas: [.fileAdded("Detached.swift")])
-            try await store.startWatchingRoot(id: record.id)
-            let restartBaseline = await store.appliedIngressSnapshotForTesting(rootID: record.id)
-            let samples = await store.awaitAppliedIngressForAllRoots()
+            let initialServiceState = await service.publicationStateForTesting()
+            let initialIngress = await store.appliedIngressSnapshotForTesting(rootID: rootID)
+            try await store.publishSyntheticFileSystemDeltasForTesting(
+                rootID: rootID,
+                deltas: [.fileAdded("Detached.swift")]
+            )
+            let detachedServiceState = await service.publicationStateForTesting()
+            let detachedIngress = await store.appliedIngressSnapshotForTesting(rootID: rootID)
+
+            XCTAssertEqual(
+                detachedServiceState.lastServicePublicationSequence,
+                initialServiceState.lastServicePublicationSequence + 1
+            )
+            XCTAssertEqual(detachedIngress, initialIngress)
+            let fileAfterDetachedPublication = await store.file(rootID: rootID, relativePath: "Detached.swift")
+            XCTAssertNil(fileAfterDetachedPublication)
+
+            // Exercise the same publisher-ingress attachment used by watcher restart without
+            // introducing nondeterministic macOS FSEvents into this sequence-gap contract.
+            let attached = try await store.attachPublisherIngressWithoutStartingWatcherForTesting(rootID: rootID)
+            XCTAssertTrue(attached)
+
+            let flushGate = AsyncGate()
+            await store.setScopedIngressBarrierWillFlushHandler { observedRootID in
+                guard observedRootID == rootID else { return }
+                await flushGate.markStartedAndWaitForRelease()
+            }
+            let barrierTask = Task {
+                await store.awaitAppliedIngressForAllRoots()
+            }
+            await flushGate.waitUntilStarted()
+
+            let diagnostics = await store.readSearchRootDiagnosticsSnapshot()
+            guard let active = diagnostics.first(where: { $0.rootID == rootID })?.barrier.active else {
+                barrierTask.cancel()
+                await flushGate.release()
+                _ = await barrierTask.value
+                return XCTFail("Expected an active barrier while the deterministic flush gate was held")
+            }
+            guard active.targetServicePublicationSequence == detachedIngress.acceptedServicePublicationSequence else {
+                barrierTask.cancel()
+                await flushGate.release()
+                _ = await barrierTask.value
+                return XCTFail(
+                    "Barrier targeted detached service sequence \(active.targetServicePublicationSequence); " +
+                        "expected accepted ingress cut \(detachedIngress.acceptedServicePublicationSequence)"
+                )
+            }
+            XCTAssertLessThan(
+                active.targetServicePublicationSequence,
+                detachedServiceState.lastServicePublicationSequence
+            )
+
+            await flushGate.release()
+            let samples = await barrierTask.value
             let sample = try XCTUnwrap(samples.first)
 
-            XCTAssertGreaterThan(sample.publishedServicePublicationSequence, 0)
-            XCTAssertEqual(sample.appliedServicePublicationSequence, restartBaseline.appliedServicePublicationSequence)
-            XCTAssertEqual(sample.appliedWatcherWatermark, restartBaseline.appliedWatcherWatermark.rawValue)
-            await store.stopWatchingRoot(id: record.id)
+            XCTAssertEqual(
+                sample.acceptedWatcherWatermark,
+                initialServiceState.lastPublishedWatcherAcceptedWatermark.rawValue
+            )
+            XCTAssertEqual(
+                sample.publishedServicePublicationSequence,
+                detachedServiceState.lastServicePublicationSequence
+            )
+            XCTAssertEqual(sample.appliedServicePublicationSequence, detachedIngress.appliedServicePublicationSequence)
+            XCTAssertEqual(sample.appliedWatcherWatermark, detachedIngress.appliedWatcherWatermark.rawValue)
+            let fileAfterBarrier = await store.file(rootID: rootID, relativePath: "Detached.swift")
+            XCTAssertNil(fileAfterBarrier)
         }
 
         func testWorkspaceIngressCoordinatorDrainsPublicationsInAcceptedOrder() async {

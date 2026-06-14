@@ -1236,6 +1236,20 @@ actor WorkspaceFileContextStore {
             await waitForCurrentPublisherIngress(rootIDs: [rootID])
             return
         }
+        guard try await attachPublisherIngress(state: state, rootID: rootID) else { return }
+        do {
+            try await reconcileWatcherServiceState(state.service, rootID: rootID)
+            await waitForCurrentPublisherIngress(rootIDs: [rootID])
+        } catch {
+            watcherCancellablesByRootID.removeValue(forKey: rootID)?.cancel()
+            publisherIngressCoordinator.closePublisherIngress(rootID: rootID)
+            try? await reconcileWatcherServiceState(state.service, rootID: rootID)
+            await waitForCurrentPublisherIngress(rootIDs: [rootID])
+            throw error
+        }
+    }
+
+    private func attachPublisherIngress(state: RootState, rootID: UUID) async throws -> Bool {
         let root = state.root
         let lifetimeID = state.lifetimeID
         let diagnosticRootToken = state.service.diagnosticRootToken
@@ -1264,7 +1278,7 @@ actor WorkspaceFileContextStore {
               publisherIngressCoordinator.isPublisherIngressOpen(subscription)
         else {
             try await reconcileWatcherServiceState(state.service, rootID: rootID)
-            return
+            return false
         }
         let cancellable = publisher.sink { publication in
             #if DEBUG || EDIT_FLOW_PERF
@@ -1293,20 +1307,19 @@ actor WorkspaceFileContextStore {
         else {
             cancellable.cancel()
             try await reconcileWatcherServiceState(state.service, rootID: rootID)
-            return
+            return false
         }
         watcherCancellablesByRootID[rootID] = cancellable
-        do {
-            try await reconcileWatcherServiceState(state.service, rootID: rootID)
-            await waitForCurrentPublisherIngress(rootIDs: [rootID])
-        } catch {
-            watcherCancellablesByRootID.removeValue(forKey: rootID)?.cancel()
-            publisherIngressCoordinator.closePublisherIngress(rootID: rootID)
-            try? await reconcileWatcherServiceState(state.service, rootID: rootID)
-            await waitForCurrentPublisherIngress(rootIDs: [rootID])
-            throw error
-        }
+        return true
     }
+
+    #if DEBUG
+        func attachPublisherIngressWithoutStartingWatcherForTesting(rootID: UUID) async throws -> Bool {
+            if watcherCancellablesByRootID[rootID] != nil { return true }
+            let state = try state(for: rootID)
+            return try await attachPublisherIngress(state: state, rootID: rootID)
+        }
+    #endif
 
     func stopWatchingRoot(id rootID: UUID) async {
         watcherCancellablesByRootID.removeValue(forKey: rootID)?.cancel()
