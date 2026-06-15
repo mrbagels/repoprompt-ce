@@ -1,6 +1,11 @@
 import Foundation
 
 extension MCPServerViewModel {
+    enum SelectionReplyIngressPolicy: Equatable {
+        case awaitPending
+        case alreadyAwaited
+    }
+
     @MainActor
     func stabilizedVirtualSelection(for context: TabScopedContext) async -> StoredSelection {
         // For any tab-bound virtual context (including runs), prefer latest stored tab selection.
@@ -272,7 +277,8 @@ extension MCPServerViewModel {
         viewMode: String? = nil,
         codeMapUsageOverride: CodeMapUsage? = nil,
         virtualContext: TabScopedContext? = nil,
-        lookupContextOverride: WorkspaceLookupContext? = nil
+        lookupContextOverride: WorkspaceLookupContext? = nil,
+        ingressPolicy: SelectionReplyIngressPolicy = .awaitPending
     ) async -> ToolResultDTOs.SelectionReply {
         // Always use .auto mode for manage_selection (normalized view)
         let effectiveOverride = effectiveMCPCodeMapUsage(codeMapUsageOverride ?? .auto)
@@ -283,7 +289,9 @@ extension MCPServerViewModel {
         } else {
             WorkspaceLookupContext.visibleWorkspace
         }
-        _ = await promptVM.workspaceFileContextStore.awaitAppliedIngress(rootScope: lookupContext.rootScope)
+        if ingressPolicy == .awaitPending {
+            _ = await promptVM.workspaceFileContextStore.awaitAppliedIngress(rootScope: lookupContext.rootScope)
+        }
         let effectiveSelection = lookupContext.physicalizeSelection(selection)
         let source = StoredSelectionSource(stored: effectiveSelection, codeMapUsage: effectiveOverride)
         let collections = await SelectionReplyAssembler.collect(from: source, owner: self, rootScope: lookupContext.rootScope)
@@ -380,10 +388,7 @@ extension MCPServerViewModel {
         viewMode: String? = nil,
         resolvedContext: ResolvedTabContextSnapshot
     ) async -> ToolResultDTOs.SelectionReply {
-        var context = resolvedContext.snapshot
-        if !resolvedContext.usesActiveTabCompatibility {
-            context.selection = await stabilizedVirtualSelection(for: context)
-        }
+        let context = resolvedContext.snapshot
         return await buildTabSelectionReply(
             from: context.selection,
             includeBlocks: includeBlocks,
@@ -391,7 +396,8 @@ extension MCPServerViewModel {
             extraInvalid: extraInvalid,
             viewMode: viewMode,
             codeMapUsageOverride: .auto,
-            virtualContext: resolvedContext.usesActiveTabCompatibility ? nil : context
+            virtualContext: resolvedContext.usesActiveTabCompatibility ? nil : context,
+            ingressPolicy: .alreadyAwaited
         )
     }
 

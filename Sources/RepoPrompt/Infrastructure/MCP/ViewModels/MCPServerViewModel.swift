@@ -812,7 +812,8 @@ final class MCPServerViewModel: ObservableObject {
                 extraInvalid: extraInvalid,
                 viewMode: viewMode,
                 codeMapUsageOverride: codeMapUsageOverride,
-                virtualContext: virtualContext
+                virtualContext: virtualContext,
+                ingressPolicy: .alreadyAwaited
             )
         },
         buildManageSelectionSetSelection: { [weak self] inputs, mode, existing, lookupRootScope in
