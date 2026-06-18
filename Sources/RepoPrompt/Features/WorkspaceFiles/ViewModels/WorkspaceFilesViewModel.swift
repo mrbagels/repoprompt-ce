@@ -708,6 +708,7 @@ class WorkspaceFilesViewModel: ObservableObject {
     let workspaceFileContextStore: WorkspaceFileContextStore
     private weak var selectionCoordinator: WorkspaceSelectionCoordinator?
     private var selectionCoordinatorCancellable: AnyCancellable?
+    private var pendingPresentationTasks: [UUID: Task<Void, Never>] = [:]
     private var workspaceFileContextRootsByRootKey: [RootKey: WorkspaceRootRecord] = [:]
     private var preloadedWorkspaceFileContextRootsByRootKey: [RootKey: WorkspaceRootRecord] = [:]
     private var rootShellPersistenceKeysByRootKey: [RootKey: WorkspaceRootShellPersistenceKey] = [:]
@@ -1216,6 +1217,10 @@ class WorkspaceFilesViewModel: ObservableObject {
         sliceRebaseTasksByFullPath.removeAll()
         sliceRebaseTaskIDsByFullPath.removeAll()
         workspaceSaveDebounceTask?.cancel()
+        for task in pendingPresentationTasks.values {
+            task.cancel()
+        }
+        pendingPresentationTasks.removeAll()
         selectionCoordinatorCancellable?.cancel()
         partitionStoreSaveCancellable?.cancel()
         fileSystemSettingsCancellable?.cancel()
@@ -1233,21 +1238,23 @@ class WorkspaceFilesViewModel: ObservableObject {
         selectionCoordinatorCancellable = coordinator.changes
             .sink { [weak self, weak coordinator] change in
                 guard change.source != .uiFlush, !change.source.isMCPSelectionSource else { return }
-                Task { @MainActor [weak self, weak coordinator] in
-                    guard let self, let coordinator else { return }
-                    if let changeTabID = change.tabID {
-                        guard let activeIdentity = coordinator.activeSelectionIdentity(),
-                              activeIdentity.tabID == changeTabID,
-                              coordinator.selectionSnapshot(
-                                  for: activeIdentity,
-                                  flushPendingUIIfActive: false
-                              )?.selection == change.selection
-                        else { return }
-                    }
-                    let current = snapshotSelection()
-                    guard current != change.selection else { return }
-                    await coordinator.withApplyingSelectionMirror {
-                        await self.applyStoredSelection(change.selection)
+                MainActor.assumeIsolated {
+                    self?.launchPresentationTask { [weak self, weak coordinator] in
+                        guard let self, let coordinator else { return }
+                        if let changeTabID = change.tabID {
+                            guard let activeIdentity = coordinator.activeSelectionIdentity(),
+                                  activeIdentity.tabID == changeTabID,
+                                  coordinator.selectionSnapshot(
+                                      for: activeIdentity,
+                                      flushPendingUIIfActive: false
+                                  )?.selection == change.selection
+                            else { return }
+                        }
+                        let current = snapshotSelection()
+                        guard current != change.selection else { return }
+                        await coordinator.withApplyingSelectionMirror {
+                            await self.applyStoredSelection(change.selection)
+                        }
                     }
                 }
             }
@@ -1257,18 +1264,42 @@ class WorkspaceFilesViewModel: ObservableObject {
         workspaceManager = manager
         currentWorkspaceID = manager.activeWorkspaceID
         manager.addWorkspaceDidSwitchListener(label: "fileManager") { [weak self] workspace in
-            guard let self else { return }
-            Task { @MainActor in
-                await self.handleWorkspaceSwitch(to: workspace)
+            MainActor.assumeIsolated {
+                self?.launchPresentationTask { [weak self] in
+                    await self?.handleWorkspaceSwitch(to: workspace)
+                }
             }
         }
         if let activeWorkspace = manager.activeWorkspace {
-            Task { @MainActor in
-                await self.handleWorkspaceSwitch(to: activeWorkspace)
+            launchPresentationTask { [weak self] in
+                await self?.handleWorkspaceSwitch(to: activeWorkspace)
             }
         } else {
             currentSlicesByRoot.removeAll()
             requestSelectionSliceSnapshotRebuild(reason: "selection.slicesSnapshot")
+        }
+    }
+
+    private func launchPresentationTask(
+        _ operation: @escaping @MainActor () async -> Void
+    ) {
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            defer { self?.pendingPresentationTasks.removeValue(forKey: taskID) }
+            await operation()
+        }
+        pendingPresentationTasks[taskID] = task
+    }
+
+    /// Waits for concrete workspace-switch and stored-selection presentation tasks that were
+    /// synchronously registered before this barrier, including work they register in turn.
+    /// Callers must not invoke this from inside a tracked presentation task.
+    func waitForPendingPresentationTasks() async {
+        while !pendingPresentationTasks.isEmpty {
+            let tasks = Array(pendingPresentationTasks.values)
+            for task in tasks {
+                await task.value
+            }
         }
     }
 

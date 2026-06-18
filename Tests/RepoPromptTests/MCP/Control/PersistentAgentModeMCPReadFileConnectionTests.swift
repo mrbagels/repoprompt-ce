@@ -934,10 +934,24 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                 ],
                 codemapAutoEnabled: selectionAdvancedAfterIngressSnapshot.selection.codemapAutoEnabled
             )
-            XCTAssertTrue(fixture.window.workspaceManager.updateComposeTabStoredOnly(
-                selectionAdvancedAfterIngressSnapshot,
-                inWorkspaceID: fixture.workspaceID
-            ))
+            let selectionAdvanceIdentity = WorkspaceSelectionIdentity(
+                workspaceID: fixture.workspaceID,
+                tabID: Fixture.tabID
+            )
+            let persistedSelectionAdvance = try await fixture.window.selectionCoordinator.persistSelection(
+                selectionAdvancedAfterIngressSnapshot.selection,
+                for: selectionAdvanceIdentity,
+                source: .mcpTabContext,
+                mirrorToUIIfActive: false,
+                expectedCurrentSelection: XCTUnwrap(
+                    fixture.window.workspaceManager.composeTab(for: selectionAdvanceIdentity)?.selection
+                )
+            )
+            XCTAssertEqual(
+                persistedSelectionAdvance,
+                selectionAdvancedAfterIngressSnapshot.selection,
+                "Deterministic late-ingress selection advance did not persist through the canonical coordinator"
+            )
 
             await delayedIngressGate.release()
             await assertReadFileAutoSelectionSettled(fixture: fixture)
@@ -1883,8 +1897,10 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
 
             let header = fixture.window.promptManager.currentComposeTabs.first { $0.id == Fixture.tabID }
             if expectHeaderMirror {
-                XCTAssertEqual(header?.selection.selectedPaths, selectedPaths)
-                XCTAssertEqual(header?.selection.slices, slices)
+                let failureContext = "canonical=\(String(describing: stored?.selection)); header=\(String(describing: header?.selection)); "
+                    + "readAutoSelection=\(fixture.window.mcpServer.readFileAutoSelectionDiagnosticsSnapshot())"
+                XCTAssertEqual(header?.selection.selectedPaths, selectedPaths, failureContext)
+                XCTAssertEqual(header?.selection.slices, slices, failureContext)
             }
             XCTAssertEqual(header?.activeAgentSessionID, Fixture.agentSessionID)
         }
@@ -2742,7 +2758,27 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                 guard exactHit?.standardizedFullPath == fileURL.path else {
                     throw ClientFixtureError.exactAbsoluteCatalogMiss
                 }
-                await settleInitialPresentationLifecycle()
+                await window.workspaceManager.fileManager.waitForPendingPresentationTasks()
+                let presentationIdentity = WorkspaceSelectionIdentity(
+                    workspaceID: activeWorkspace.id,
+                    tabID: tabID
+                )
+                let canonicalPresentationTab = try XCTUnwrap(
+                    window.workspaceManager.composeTab(for: presentationIdentity),
+                    "Fixture presentation barrier completed without the canonical target tab"
+                )
+                let headerPresentationTab = try XCTUnwrap(
+                    window.promptManager.currentComposeTabs.first { $0.id == tabID },
+                    "Fixture presentation barrier completed without the target header tab"
+                )
+                guard headerPresentationTab.selection == canonicalPresentationTab.selection,
+                      headerPresentationTab.activeAgentSessionID == canonicalPresentationTab.activeAgentSessionID
+                else {
+                    throw ClientFixtureError.presentationStateMismatch(
+                        "canonical selection=\(canonicalPresentationTab.selection), session=\(String(describing: canonicalPresentationTab.activeAgentSessionID)); "
+                            + "header selection=\(headerPresentationTab.selection), session=\(String(describing: headerPresentationTab.activeAgentSessionID))"
+                    )
+                }
 
                 let resolvedCatalogService = window.mcpServer.windowMCPToolCatalogService
                 catalogService = resolvedCatalogService
@@ -2902,17 +2938,6 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                 WindowStatesManager.shared.unregisterWindowState(window)
                 try? FileManager.default.removeItem(at: rootURL)
                 throw error
-            }
-        }
-
-        private static func settleInitialPresentationLifecycle() async {
-            await withCheckedContinuation { continuation in
-                DispatchQueue.main.async {
-                    // Drain presentation observers scheduled by the first main-queue delivery.
-                    DispatchQueue.main.async {
-                        continuation.resume()
-                    }
-                }
             }
         }
 
@@ -3652,6 +3677,7 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
         case parentAffinitySeedFailed(String)
         case handoverPolicyApplicationFailed(String)
         case liveFixtureTooShort(Int)
+        case presentationStateMismatch(String)
     }
 
     private struct RetainedConnectionSnapshot: Equatable {
