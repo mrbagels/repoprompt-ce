@@ -576,6 +576,10 @@ struct OrderedSearchBatchWindow {
 
 /// Ripgrep-style asynchronous searcher, fully cancellable.
 actor FileSearchActor {
+    static func pathSearchInputPrecedes(_ lhsPath: String, _ rhsPath: String) -> Bool {
+        WorkspaceFileContextStore.compareUTF8Binary(lhsPath, rhsPath) == .orderedAscending
+    }
+
     private static func descriptors(
         for files: [WorkspaceFileRecord],
         rootsByID: [UUID: WorkspaceRootRecord],
@@ -2327,7 +2331,7 @@ actor FileSearchActor {
             let sortAndInputStart = WorkspaceFileSearchDebugTiming.now()
         #endif
         let entries = files
-            .sorted { $0.fullPath < $1.fullPath }
+            .sorted { Self.pathSearchInputPrecedes($0.fullPath, $1.fullPath) }
             .enumerated()
             .map { SearchPathInput(ordinal: $0.offset, file: $0.element) }
         #if DEBUG

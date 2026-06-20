@@ -319,6 +319,10 @@ import XCTest
                 Array(precomposedEntry.pathSearchIndexKey.utf8),
                 Array(decomposedEntry.pathSearchIndexKey.utf8)
             )
+            let precomposedPath = "/virtual/ÉTarget.swift"
+            let decomposedPath = "/virtual/E\u{301}Target.swift"
+            XCTAssertTrue(FileSearchActor.pathSearchInputPrecedes(decomposedPath, precomposedPath))
+            XCTAssertFalse(FileSearchActor.pathSearchInputPrecedes(precomposedPath, decomposedPath))
 
             let lifetimeID = try XCTUnwrap(UUID(uuidString: "20000000-0000-0000-0000-000000000000"))
             let baseIndex = WorkspaceSearchRootPathIndex(

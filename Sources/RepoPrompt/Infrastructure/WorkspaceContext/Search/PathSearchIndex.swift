@@ -351,13 +351,7 @@ final class WorkspaceSearchRootPathIndex: @unchecked Sendable {
         case .orderedSame:
             break
         }
-        if lhs.entry.rootPath != rhs.entry.rootPath {
-            return lhs.entry.rootPath < rhs.entry.rootPath
-        }
-        if lhs.entry.standardizedRelativePath != rhs.entry.standardizedRelativePath {
-            return lhs.entry.standardizedRelativePath < rhs.entry.standardizedRelativePath
-        }
-        return lhs.entry.id.uuidString < rhs.entry.id.uuidString
+        return WorkspaceFileContextStore.searchCatalogEntryPrecedes(lhs.entry, rhs.entry)
     }
 }
 
